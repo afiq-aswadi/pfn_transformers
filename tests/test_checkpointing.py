@@ -58,7 +58,6 @@ class TestCheckpointSaving:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 
@@ -102,7 +101,6 @@ class TestCheckpointSaving:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 
@@ -149,7 +147,6 @@ class TestCheckpointSaving:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 
@@ -190,7 +187,6 @@ class TestCheckpointLoading:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 
@@ -237,7 +233,6 @@ class TestCheckpointLoading:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 
@@ -281,7 +276,6 @@ class TestCheckpointLoading:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 
@@ -334,7 +328,6 @@ class TestCheckpointLoading:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 
@@ -375,7 +368,6 @@ class TestCheckpointLoading:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 
@@ -469,7 +461,6 @@ class TestResumeTraining:
                 d_vocab=10,
                 input_dim=2,
                 prediction_type="point",
-                bucket_type=None,
                 act_fn="gelu",
             )
 

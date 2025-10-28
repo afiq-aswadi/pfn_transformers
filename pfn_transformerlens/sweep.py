@@ -212,7 +212,7 @@ def train_one_run():
     import wandb
 
     os.environ["WANDB_CONSOLE"] = "off"
-    _ = wandb.init(settings=wandb.Settings(_disable_stats=True, _disable_meta=True))
+    _ = wandb.init()
 
     # get sweep parameters
     num_tasks = wandb.config.num_tasks
@@ -240,7 +240,6 @@ def train_one_run():
         act_fn="gelu",
         use_pos_emb=True,
         prediction_type="point",
-        bucket_type=None,
         input_dim=1,
         mask_type="gpt2",
     )
@@ -252,21 +251,13 @@ def train_one_run():
         num_steps=200,
         learning_rate=learning_rate,
         log_every=50,
-        save_checkpoint=False,
+        save_checkpoint=True,
+        save_every=200,  # save at end of training
+        checkpoint_dir="sweep_checkpoints",
         eval_every=None,
         device="auto",
-        use_wandb=False,
-    )
-
-    # log all configs
-    wandb.config.update(
-        {
-            "model": model_config.__dict__,
-            "training": training_config.__dict__,
-            "data": data_config.__dict__,
-            "gpu_id": gpu_id,
-        },
-        allow_val_change=True,
+        use_wandb=True,  # enable WandbLogger for artifact uploads
+        wandb_log_model=True,  # upload checkpoints for load_by_config
     )
 
     # train
@@ -284,6 +275,7 @@ def train_one_run():
         data_generator, batch_size=32, seq_len=training_config.seq_len
     )
 
+    assert x_test is not None, "x_test should not be None for supervised regression"
     device = next(model.parameters()).device
     x_test = x_test.to(device)
     y_test = y_test.to(device)
@@ -294,7 +286,7 @@ def train_one_run():
 
     print(f"Final MSE: {final_mse:.4f}")
     wandb.log({"final_test_mse": final_mse})
-    wandb.finish()
+    # Note: wandb.finish() called by WandbLogger in train()
 
 
 @dataclass

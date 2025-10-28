@@ -111,7 +111,6 @@ class TestUnsupervisedEmbeddingLayer:
             act_fn="gelu",
             input_dim=3,
             prediction_type="point",
-            bucket_type=None,  # type: ignore[arg-type]
         )
         model = PFNModel(config)
 
@@ -467,7 +466,6 @@ class TestUnsupervisedVsSupervisedMode:
             act_fn="gelu",
             input_dim=1,
             prediction_type="point",
-            bucket_type=None,  # type: ignore[arg-type]
         )
         model = PFNModel(config)
         device = next(model.parameters()).device
@@ -517,7 +515,6 @@ class TestContinuousUnsupervised:
                 d_vocab=10,
                 input_type="continuous",
                 prediction_type="distribution",
-                bucket_type=None,
             )
 
     def test_continuous_distribution_with_bucket_type(self) -> None:

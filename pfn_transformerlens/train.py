@@ -166,15 +166,20 @@ class WandbLogger:
             else:
                 raise TypeError("data_config must be a dataclass")
 
-        # initialize wandb run
-        self.wandb.init(
-            project=project,
-            entity=entity,
-            name=training_config.wandb_run_name,
-            tags=training_config.wandb_tags,
-            notes=training_config.wandb_notes,
-            config=wandb_config,
-        )
+        # check if wandb is already initialized (e.g., by wandb sweep agent)
+        if self.wandb.run is None:
+            # initialize wandb run
+            self.wandb.init(
+                project=project,
+                entity=entity,
+                name=training_config.wandb_run_name,
+                tags=training_config.wandb_tags,
+                notes=training_config.wandb_notes,
+                config=wandb_config,
+            )
+        else:
+            # wandb already initialized (sweep agent), just update config
+            self.wandb.config.update(wandb_config, allow_val_change=True)
 
         # Store run info for checkpoint metadata
         if self.wandb.run is not None:
@@ -200,6 +205,7 @@ class WandbLogger:
         if not self.enabled or not self.log_model:
             return
 
+        assert self.wandb.run is not None, "wandb run must be initialized"
         artifact_metadata = {
             "step": step,
             "run_name": self.wandb.run.name,

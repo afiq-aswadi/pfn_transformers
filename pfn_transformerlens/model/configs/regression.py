@@ -32,7 +32,7 @@ class SupervisedRegressionPFNConfig(BasePFNConfig):
 
     mask_type: Literal["autoregressive-pfn", "gpt2"] = "autoregressive-pfn"
     prediction_type: Literal["distribution", "point"] = "distribution"
-    bucket_type: Literal["uniform", "riemann"] = "uniform"
+    bucket_type: Literal["uniform", "riemann"] | None = None
     bucket_support: Literal["unbounded", "bounded"] = "unbounded"
     y_min: float | None = None
     y_max: float | None = None
@@ -53,6 +53,11 @@ class SupervisedRegressionPFNConfig(BasePFNConfig):
                     "Set prediction_type='distribution' to use buckets."
                 )
         elif self.prediction_type == "distribution":
+            if self.bucket_type is None:
+                raise ValueError(
+                    "Distribution prediction mode requires bucket_type to be specified. "
+                    "Use 'uniform' or 'riemann'."
+                )
             if self.bucket_type == "uniform":
                 if self.y_min is None or self.y_max is None:
                     raise ValueError(

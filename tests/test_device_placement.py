@@ -28,7 +28,6 @@ class TestDevicePlacement:
             d_vocab=10,
             input_dim=2,
             prediction_type="point",
-            bucket_type=None,  # type: ignore[arg-type]
             act_fn="gelu",
         )
         model = PFNModel(config)
@@ -65,7 +64,6 @@ class TestDevicePlacement:
             d_vocab=10,
             input_dim=2,
             prediction_type="point",
-            bucket_type=None,  # type: ignore[arg-type]
             act_fn="gelu",
         )
         model = PFNModel(config)
@@ -144,7 +142,6 @@ class TestDevicePlacement:
             d_vocab=10,
             input_dim=2,
             prediction_type="point",
-            bucket_type=None,  # type: ignore[arg-type]
             act_fn="gelu",
         )
         model = PFNModel(config)
@@ -178,7 +175,6 @@ class TestDevicePlacement:
             d_vocab=10,
             input_dim=2,
             prediction_type="point",
-            bucket_type=None,  # type: ignore[arg-type]
             act_fn="gelu",
         )
         model = PFNModel(config)
@@ -213,7 +209,6 @@ class TestDevicePlacement:
             d_vocab=10,
             input_dim=1,
             prediction_type="point",
-            bucket_type=None,  # type: ignore[arg-type]
             act_fn="gelu",
         )
         model = PFNModel(config)

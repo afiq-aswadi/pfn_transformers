@@ -11,8 +11,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
 
-from pfn_transformerlens.model.configs import UnsupervisedPFNConfig
-from pfn_transformerlens.train import TrainingConfig, train
+from pfn_transformerlens import (
+    train,
+    TrainingConfig,
+    UnsupervisedConfig,
+)
 
 
 def sample_transition_matrix(num_states: int) -> torch.Tensor:
@@ -51,7 +54,7 @@ def main():
 
     data_gen = MarkovChainGenerator(num_states)
 
-    model_config = UnsupervisedPFNConfig(
+    model_config = UnsupervisedConfig(
         d_model=128,
         n_layers=4,
         n_heads=4,

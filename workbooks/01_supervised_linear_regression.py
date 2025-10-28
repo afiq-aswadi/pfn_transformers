@@ -13,9 +13,12 @@ import torch
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from pfn_transformerlens.sampler.data_generator import DeterministicFunctionGenerator
-from pfn_transformerlens.model.configs import SupervisedRegressionPFNConfig
-from pfn_transformerlens.train import train, TrainingConfig
+from pfn_transformerlens import (
+    train,
+    TrainingConfig,
+    RegressionConfig,
+    DeterministicGenerator,
+)
 
 
 def linear_function(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
@@ -37,13 +40,10 @@ def main():
     # use Independent to create a multivariate distribution
     print("\nSetting up data generator...")
     prior = torch.distributions.Independent(
-        torch.distributions.Normal(
-            torch.zeros(input_dim),
-            torch.ones(input_dim)
-        ),
-        reinterpreted_batch_ndims=1
+        torch.distributions.Normal(torch.zeros(input_dim), torch.ones(input_dim)),
+        reinterpreted_batch_ndims=1,
     )
-    data_gen = DeterministicFunctionGenerator(
+    data_gen = DeterministicGenerator(
         prior=prior,
         function=linear_function,
         input_dim=input_dim,
@@ -52,7 +52,7 @@ def main():
 
     # model config: small model for quick training
     print("Configuring model...")
-    model_config = SupervisedRegressionPFNConfig(
+    model_config = RegressionConfig(
         d_model=128,
         n_layers=4,
         n_heads=4,
@@ -118,23 +118,25 @@ def main():
 
         # compute mean and std from distribution
         y_pred_mean = (query_probs * y_grid).sum(dim=-1)
-        y_pred_std = torch.sqrt((query_probs * (y_grid - y_pred_mean.unsqueeze(-1))**2).sum(dim=-1))
+        y_pred_std = torch.sqrt(
+            (query_probs * (y_grid - y_pred_mean.unsqueeze(-1)) ** 2).sum(dim=-1)
+        )
 
         # plot: compare predictions vs true values
         ax = axes[idx]
         x_plot = torch.arange(num_query)
-        ax.plot(x_plot, y_query_true.cpu(), 'o', label='True', alpha=0.7)
-        ax.plot(x_plot, y_pred_mean, 's', label='Predicted', alpha=0.7)
+        ax.plot(x_plot, y_query_true.cpu(), "o", label="True", alpha=0.7)
+        ax.plot(x_plot, y_pred_mean, "s", label="Predicted", alpha=0.7)
         ax.fill_between(
             x_plot,
-            y_pred_mean - 2*y_pred_std,
-            y_pred_mean + 2*y_pred_std,
+            y_pred_mean - 2 * y_pred_std,
+            y_pred_mean + 2 * y_pred_std,
             alpha=0.3,
-            label='±2σ'
+            label="±2σ",
         )
-        ax.set_xlabel('Query Point')
-        ax.set_ylabel('y')
-        ax.set_title(f'Function {idx+1}')
+        ax.set_xlabel("Query Point")
+        ax.set_ylabel("y")
+        ax.set_title(f"Function {idx + 1}")
         ax.legend()
         ax.grid(True, alpha=0.3)
 
@@ -163,28 +165,32 @@ def main():
     query_probs = pred.probs[num_context:].cpu()
     y_grid = pred.y_grid.cpu()
     y_pred_mean = (query_probs * y_grid).sum(dim=-1)
-    y_pred_std = torch.sqrt((query_probs * (y_grid - y_pred_mean.unsqueeze(-1))**2).sum(dim=-1))
+    y_pred_std = torch.sqrt(
+        (query_probs * (y_grid - y_pred_mean.unsqueeze(-1)) ** 2).sum(dim=-1)
+    )
 
     ax = axes[0]
     ax.scatter(y_query_true.cpu(), y_pred_mean, alpha=0.6)
-    ax.errorbar(y_query_true.cpu(), y_pred_mean, yerr=2*y_pred_std, fmt='none', alpha=0.3)
+    ax.errorbar(
+        y_query_true.cpu(), y_pred_mean, yerr=2 * y_pred_std, fmt="none", alpha=0.3
+    )
     lim_min = min(y_query_true.min().item(), y_pred_mean.min().item())
     lim_max = max(y_query_true.max().item(), y_pred_mean.max().item())
-    ax.plot([lim_min, lim_max], [lim_min, lim_max], 'k--', alpha=0.5, label='Perfect')
-    ax.set_xlabel('True y')
-    ax.set_ylabel('Predicted y (mean)')
-    ax.set_title('Prediction Accuracy')
+    ax.plot([lim_min, lim_max], [lim_min, lim_max], "k--", alpha=0.5, label="Perfect")
+    ax.set_xlabel("True y")
+    ax.set_ylabel("Predicted y (mean)")
+    ax.set_title("Prediction Accuracy")
     ax.legend()
     ax.grid(True, alpha=0.3)
 
     # plot 2: predicted distribution for a few query points
     ax = axes[1]
     for i in range(min(5, num_query)):
-        ax.plot(y_grid, query_probs[i], alpha=0.7, label=f'Query {i+1}')
-        ax.axvline(y_query_true[i].item(), color=f'C{i}', linestyle='--', alpha=0.5)
-    ax.set_xlabel('y')
-    ax.set_ylabel('Probability')
-    ax.set_title('Predicted Distributions (dashed = true value)')
+        ax.plot(y_grid, query_probs[i], alpha=0.7, label=f"Query {i + 1}")
+        ax.axvline(y_query_true[i].item(), color=f"C{i}", linestyle="--", alpha=0.5)
+    ax.set_xlabel("y")
+    ax.set_ylabel("Probability")
+    ax.set_title("Predicted Distributions (dashed = true value)")
     ax.legend()
     ax.grid(True, alpha=0.3)
 

@@ -14,15 +14,13 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
 
-from pfn_transformerlens.model.configs import UnsupervisedPFNConfig
-from pfn_transformerlens.sampler.data_generator import (
-    UnsupervisedProbabilisticGenerator,
+from pfn_transformerlens import (
+    train,
+    TrainingConfig,
+    UnsupervisedConfig,
+    UnsupervisedBayesian,
 )
-from pfn_transformerlens.sampler.prior_likelihood import (
-    LikelihoodDistribution,
-    PriorDistribution,
-)
-from pfn_transformerlens.train import TrainingConfig, train
+from pfn_transformerlens.bayes import Prior, Likelihood
 
 
 def main():
@@ -30,7 +28,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # prior: Beta(2, 2) distribution over bias
-    prior = PriorDistribution(
+    prior = Prior(
         base_distribution=torch.distributions.Beta(
             torch.tensor(10.0), torch.tensor(2.0)
         )
@@ -42,7 +40,7 @@ def main():
         seq_len = x.shape[0]
         return {"probs": theta.expand(seq_len)}
 
-    likelihood = LikelihoodDistribution(
+    likelihood = Likelihood(
         base_distribution=torch.distributions.Bernoulli(0.5),  # dummy base
         parameterizer=bernoulli_parameterizer,
         input_dim=1,
@@ -58,11 +56,11 @@ def main():
             y = self.base_gen.generate(seq_len)
             return y.long()
 
-    base_gen = UnsupervisedProbabilisticGenerator(prior=prior, likelihood=likelihood)
+    base_gen = UnsupervisedBayesian(prior=prior, likelihood=likelihood)
     data_gen = DiscreteBernoulliGenerator(base_gen)
 
     # model config: discrete inputs (0 or 1)
-    model_config = UnsupervisedPFNConfig(
+    model_config = UnsupervisedConfig(
         d_model=128,
         n_layers=2,
         n_heads=4,

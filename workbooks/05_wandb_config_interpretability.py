@@ -11,10 +11,13 @@ import torch
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from pfn_transformerlens.sampler.data_generator import DeterministicFunctionGenerator
-from pfn_transformerlens.model.configs import SupervisedRegressionPFNConfig
-from pfn_transformerlens.train import train, TrainingConfig
-from pfn_transformerlens.checkpointing import save_checkpoint, load_checkpoint, CheckpointMetadata
+from pfn_transformerlens import (
+    train,
+    TrainingConfig,
+    RegressionConfig,
+    DeterministicGenerator,
+    checkpointing,
+)
 
 
 def linear_function(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
@@ -31,17 +34,17 @@ def main():
     input_dim = 3
     prior = torch.distributions.Independent(
         torch.distributions.Normal(torch.zeros(input_dim), torch.ones(input_dim)),
-        reinterpreted_batch_ndims=1
+        reinterpreted_batch_ndims=1,
     )
 
-    data_gen = DeterministicFunctionGenerator(
+    data_gen = DeterministicGenerator(
         prior=prior,
         function=linear_function,
         input_dim=input_dim,
         noise_std=0.1,
     )
 
-    model_config = SupervisedRegressionPFNConfig(
+    model_config = RegressionConfig(
         d_model=64,
         n_layers=2,
         n_heads=2,
@@ -74,7 +77,7 @@ def main():
     checkpoint_path = output_dir / "checkpoints" / "demo_checkpoint.pt"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
-    metadata = CheckpointMetadata(
+    metadata = checkpointing.CheckpointMetadata(
         timestamp="2024-01-01",
         wandb_run_id=None,
         wandb_run_name=None,
@@ -85,7 +88,7 @@ def main():
     # create dummy optimizer for checkpoint
     dummy_optimizer = torch.optim.Adam(model.parameters())
 
-    save_checkpoint(
+    checkpointing.save_checkpoint(
         checkpoint_path=checkpoint_path,
         step=100,
         model_state=model.state_dict(),
@@ -99,9 +102,11 @@ def main():
     # PART 2: Load model from checkpoint
     print("\nPART 2: Loading model from checkpoint")
 
-    loaded_model, _, loaded_metadata = load_checkpoint(checkpoint_path, device="auto")
+    loaded_model, _, loaded_metadata = checkpointing.load_checkpoint(
+        checkpoint_path, device="auto"
+    )
     print(f"Loaded model: {type(loaded_model)}")
-    print(f"Loaded from step: 100")
+    print("Loaded from step: 100")
     print(f"Git hash: {loaded_metadata.git_hash}")
 
     # PART 3: Access internal transformer for interpretability
@@ -121,7 +126,7 @@ def main():
         pred, cache = result
     else:
         pred = result
-        cache = pred.cache if hasattr(pred, 'cache') else None
+        cache = pred.cache if hasattr(pred, "cache") else None
 
     print(f"Prediction type: {type(pred)}")
     print(f"Has cache: {cache is not None}")
@@ -132,14 +137,16 @@ def main():
 
         # example: visualize attention patterns
         # attention pattern shape: [batch, head, query_pos, key_pos]
-        attn_pattern = cache["blocks.0.attn.hook_pattern"][0, 0].cpu()  # layer 0, head 0
+        attn_pattern = cache["blocks.0.attn.hook_pattern"][
+            0, 0
+        ].cpu()  # layer 0, head 0
 
         fig, ax = plt.subplots(figsize=(8, 6))
-        im = ax.imshow(attn_pattern, cmap='viridis', aspect='auto')
-        ax.set_xlabel('Key Position')
-        ax.set_ylabel('Query Position')
-        ax.set_title('Attention Pattern (Layer 0, Head 0)')
-        plt.colorbar(im, ax=ax, label='Attention Weight')
+        im = ax.imshow(attn_pattern, cmap="viridis", aspect="auto")
+        ax.set_xlabel("Key Position")
+        ax.set_ylabel("Query Position")
+        ax.set_title("Attention Pattern (Layer 0, Head 0)")
+        plt.colorbar(im, ax=ax, label="Attention Weight")
         plt.tight_layout()
         plt.savefig(output_dir / "attention_pattern.png", dpi=150)
         plt.close()
@@ -155,10 +162,10 @@ def main():
 
         if layer_norms:
             fig, ax = plt.subplots(figsize=(8, 5))
-            ax.plot(range(len(layer_norms)), layer_norms, 'o-')
-            ax.set_xlabel('Layer')
-            ax.set_ylabel('Mean Residual Stream Norm')
-            ax.set_title('Residual Stream Norms Across Layers')
+            ax.plot(range(len(layer_norms)), layer_norms, "o-")
+            ax.set_xlabel("Layer")
+            ax.set_ylabel("Mean Residual Stream Norm")
+            ax.set_title("Residual Stream Norms Across Layers")
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
             plt.savefig(output_dir / "residual_norms.png", dpi=150)

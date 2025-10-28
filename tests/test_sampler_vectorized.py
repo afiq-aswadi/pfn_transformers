@@ -77,6 +77,7 @@ def test_sampler_batch_shapes_and_collation() -> None:
         input_dim=D,
         y_min=-5.0,
         y_max=5.0,
+        bucket_type="uniform",
     )
     sampler = Sampler(
         seq_len=T, config=SamplerConfig(prior, likelihood, cfg), internal_batch_size=B
@@ -111,6 +112,7 @@ def test_sampler_batch_shapes_mismatched_internal_batch() -> None:
         input_dim=D,
         y_min=-5.0,
         y_max=5.0,
+        bucket_type="uniform",
     )
     sampler = Sampler(
         seq_len=T,
@@ -166,6 +168,7 @@ def test_sampler_conditioning_per_item_means_with_constant_x(
         input_dim=D,
         y_min=-5.0,
         y_max=5.0,
+        bucket_type="uniform",
     )
     sampler = Sampler(
         seq_len=T,
@@ -211,6 +214,7 @@ def test_sampler_empirical_y_stats_match_expectation() -> None:
         input_dim=D,
         y_min=-5.0,
         y_max=5.0,
+        bucket_type="uniform",
     )
     sampler = Sampler(
         seq_len=T, config=SamplerConfig(prior, likelihood, cfg), internal_batch_size=B
@@ -267,6 +271,7 @@ def test_y_over_x_constant_when_noise_zero(monkeypatch: pytest.MonkeyPatch) -> N
         input_dim=D,
         y_min=-5.0,
         y_max=5.0,
+        bucket_type="uniform",
     )
     sampler = Sampler(
         seq_len=T,
@@ -323,6 +328,7 @@ def test_y_over_x_near_constant_when_noise_tiny(
         input_dim=D,
         y_min=-5.0,
         y_max=5.0,
+        bucket_type="uniform",
     )
     sampler = Sampler(
         seq_len=T,

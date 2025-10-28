@@ -188,17 +188,12 @@ class Bucketizer(nn.Module):
         """Get representative values for each bucket.
 
         For bounded support, uses bucket midpoints. For unbounded support,
-        uses appropriate tail means for edge buckets.
+        uses interior midpoints for edge buckets (since tails are only for extrapolation).
 
         Returns:
             Representative values for each bucket.
         """
         mids = self.borders[:-1] + 0.5 * self.bucket_widths
-        if self.bucket_support == "bounded":
-            return mids
-        mids = mids.clone()
-        mids[0] = self._left_tail_mean()
-        mids[-1] = self._right_tail_mean()
         return mids
 
     def log_bucket_densities(
@@ -225,6 +220,9 @@ class Bucketizer(nn.Module):
         gathered = log_probs.gather(-1, bucket_indices.unsqueeze(-1)).squeeze(-1)
         widths = self.bucket_widths.to(device=y.device, dtype=y.dtype)
 
+        # Assert widths are positive
+        assert torch.all(widths > 0), "Bucket widths must be positive"
+
         if self.bucket_support == "bounded":
             selected_widths = widths[bucket_indices]
             return gathered - torch.log(selected_widths)
@@ -240,25 +238,50 @@ class Bucketizer(nn.Module):
                 selected_widths[interior_mask],
             )
 
-        left_mask = bucket_indices == 0
-        if left_mask.any():
-            left_scale = self._halfnormal_scale(self.bucket_widths[0]).to(
-                device=y.device,
-                dtype=y.dtype,
-            )
-            distances = (borders[1] - y[left_mask]).clamp_min(0.0)
-            log_pdf = self._half_normal_log_pdf(distances, left_scale)
-            result[left_mask] = gathered[left_mask] + log_pdf
+        # Left bucket: split into interior and tail
+        left_bucket_mask = bucket_indices == 0
+        if left_bucket_mask.any():
+            # Interior part: borders[0] <= y < borders[1]
+            left_interior_mask = left_bucket_mask & (y >= borders[0])
+            if left_interior_mask.any():
+                result[left_interior_mask] = gathered[left_interior_mask] - torch.log(
+                    selected_widths[left_interior_mask],
+                )
 
-        right_mask = bucket_indices == num_buckets - 1
-        if right_mask.any():
-            right_scale = self._halfnormal_scale(self.bucket_widths[-1]).to(
-                device=y.device,
-                dtype=y.dtype,
-            )
-            distances = (y[right_mask] - borders[-2]).clamp_min(0.0)
-            log_pdf = self._half_normal_log_pdf(distances, right_scale)
-            result[right_mask] = gathered[right_mask] + log_pdf
+            # Tail part: y < borders[0]
+            left_tail_mask = left_bucket_mask & (y < borders[0])
+            if left_tail_mask.any():
+                left_scale = self._halfnormal_scale(self.bucket_widths[0]).to(
+                    device=y.device,
+                    dtype=y.dtype,
+                )
+                distances = (borders[0] - y[left_tail_mask]).clamp_min(0.0)
+                log_pdf = self._half_normal_log_pdf(distances, left_scale)
+                result[left_tail_mask] = gathered[left_tail_mask] + log_pdf
+
+        # Right bucket: split into interior and tail
+        right_bucket_mask = bucket_indices == num_buckets - 1
+        if right_bucket_mask.any():
+            # Interior part: borders[-2] <= y < borders[-1]
+            right_interior_mask = right_bucket_mask & (y < borders[-1])
+            if right_interior_mask.any():
+                result[right_interior_mask] = gathered[right_interior_mask] - torch.log(
+                    selected_widths[right_interior_mask],
+                )
+
+            # Tail part: y >= borders[-1]
+            right_tail_mask = right_bucket_mask & (y >= borders[-1])
+            if right_tail_mask.any():
+                right_scale = self._halfnormal_scale(self.bucket_widths[-1]).to(
+                    device=y.device,
+                    dtype=y.dtype,
+                )
+                distances = (y[right_tail_mask] - borders[-1]).clamp_min(0.0)
+                log_pdf = self._half_normal_log_pdf(distances, right_scale)
+                result[right_tail_mask] = gathered[right_tail_mask] + log_pdf
+
+        # Assert all values are finite
+        assert torch.all(torch.isfinite(result)), "Log densities must be finite"
 
         return result
 
@@ -266,13 +289,13 @@ class Bucketizer(nn.Module):
         """Compute mean of left tail distribution for unbounded support."""
         scale = self._halfnormal_scale(self.bucket_widths[0])
         mean_offset = scale * SQRT_TWO_OVER_PI
-        return self.borders[1] - mean_offset
+        return self.borders[0] - mean_offset
 
     def _right_tail_mean(self) -> Tensor:
         """Compute mean of right tail distribution for unbounded support."""
         scale = self._halfnormal_scale(self.bucket_widths[-1])
         mean_offset = scale * SQRT_TWO_OVER_PI
-        return self.borders[-2] + mean_offset
+        return self.borders[-1] + mean_offset
 
     @staticmethod
     def _halfnormal_scale(width: Tensor) -> Tensor:

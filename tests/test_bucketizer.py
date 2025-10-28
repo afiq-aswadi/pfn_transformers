@@ -4,8 +4,6 @@ import pytest
 import torch
 
 from pfn_transformerlens.model.bucketizer import (
-    HALF_NORMAL_ICDF_AT_TARGET,
-    SQRT_TWO_OVER_PI,
     Bucketizer,
 )
 
@@ -49,17 +47,14 @@ def test_uniform_bucket_mapping_midpoints() -> None:
 
 
 def test_unbounded_bucket_tails_adjust_midpoints() -> None:
+    # With the fixed implementation, unbounded buckets now use midpoints
+    # for representatives (interior regions), not tail means
     bucketizer = build_uniform_bucketizer("unbounded")
     reps = bucketizer.bucket_representatives()
-    widths = bucketizer.bucket_widths
 
-    scale = widths[0] / HALF_NORMAL_ICDF_AT_TARGET
-    left_expected = bucketizer.borders[1] - scale * SQRT_TWO_OVER_PI
-    scale = widths[-1] / HALF_NORMAL_ICDF_AT_TARGET
-    right_expected = bucketizer.borders[-2] + scale * SQRT_TWO_OVER_PI
-
-    assert torch.isclose(reps[0], left_expected)
-    assert torch.isclose(reps[-1], right_expected)
+    # Check that representatives are midpoints for all buckets (including edge buckets)
+    expected_mids = bucketizer.borders[:-1] + 0.5 * bucketizer.bucket_widths
+    assert torch.allclose(reps, expected_mids)
 
 
 def test_bucketize_clamps_out_of_range_values() -> None:
@@ -119,14 +114,16 @@ def test_log_density_at_values_matches_bucket_lookup_for_bounded() -> None:
 
 
 def test_log_density_at_values_uses_half_normal_tails_for_unbounded() -> None:
+    # With the fixed implementation, half-normal is only used for values
+    # actually in the tail (beyond borders[0] and borders[-1])
     bucketizer = build_uniform_bucketizer("unbounded")
     logits = torch.zeros(4, bucketizer.num_buckets)
     y = torch.tensor(
         [
-            bucketizer.borders[0].item() - 0.5,
-            bucketizer.borders[0].item() + 0.25,
-            0.5,
-            bucketizer.borders[-1].item() + 0.75,
+            bucketizer.borders[0].item() - 0.5,  # True left tail
+            bucketizer.borders[0].item() + 0.25,  # Interior of bucket 0
+            0.5,  # Interior bucket
+            bucketizer.borders[-1].item() + 0.75,  # True right tail
         ],
         dtype=torch.float32,
     )
@@ -141,26 +138,29 @@ def test_log_density_at_values_uses_half_normal_tails_for_unbounded() -> None:
         log_probs.dtype
     )
 
-    left_distance_tail = (bucketizer.borders[1] - y[0]).to(log_probs.dtype)
-    left_distance_inside = (bucketizer.borders[1] - y[1]).to(log_probs.dtype)
-    right_distance_tail = (y[3] - bucketizer.borders[-2]).to(log_probs.dtype)
+    # True tail: distance from borders[0]
+    left_distance_tail = (bucketizer.borders[0] - y[0]).to(log_probs.dtype)
+    # Interior: use piecewise constant with bucket width
+    left_width = bucketizer.bucket_widths[0].to(log_probs.dtype)
+    # True tail: distance from borders[-1]
+    right_distance_tail = (y[3] - bucketizer.borders[-1]).to(log_probs.dtype)
 
     mid_bucket = int(bucketizer.bucketize(y[2:3]).item())
     mid_width = bucketizer.bucket_widths[mid_bucket].to(log_probs.dtype)
 
     expected = torch.stack(
         [
+            # True left tail: use half-normal
             log_probs[0, 0]
             + Bucketizer._half_normal_log_pdf(
                 left_distance_tail,
                 left_scale,
             ),
-            log_probs[1, 0]
-            + Bucketizer._half_normal_log_pdf(
-                left_distance_inside,
-                left_scale,
-            ),
+            # Interior of bucket 0: use piecewise constant
+            log_probs[1, 0] - torch.log(left_width),
+            # Interior bucket: use piecewise constant
             log_probs[2, mid_bucket] - torch.log(mid_width),
+            # True right tail: use half-normal
             log_probs[3, bucketizer.num_buckets - 1]
             + Bucketizer._half_normal_log_pdf(
                 right_distance_tail,

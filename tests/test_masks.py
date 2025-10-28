@@ -17,6 +17,7 @@ def _make_test_config(seq_len: int, input_dim: int) -> SupervisedRegressionPFNCo
         n_heads=1,
         d_mlp=64,
         d_vocab=32,
+        bucket_type="uniform",
         y_min=-5.0,
         y_max=5.0,
         n_ctx=seq_len * 2,

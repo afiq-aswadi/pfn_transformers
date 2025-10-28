@@ -1,0 +1,32 @@
+"""Configuration for classification PFN models."""
+
+from dataclasses import dataclass
+from typing import Literal
+
+from .base import BasePFNConfig
+
+
+@dataclass
+class ClassificationPFNConfig(BasePFNConfig):
+    # TODO: this feels redundant, can't both supervised/unsupervised handle classification?
+    """Configuration for multi-class classification PFN models.
+
+    Uses discrete categorical outputs (no bucketing). The model outputs
+    logits over num_classes, trained with cross-entropy loss.
+
+    Attributes:
+        num_classes: Number of classification classes.
+        mask_type: Attention mask type ("autoregressive-pfn" or "gpt2").
+    """
+
+    num_classes: int = 2
+    mask_type: Literal["autoregressive-pfn", "gpt2"] = "autoregressive-pfn"
+
+    # TODO: is this really necessary... like can't we just use d_vocab_out directly...
+    def __post_init__(self) -> None:
+        super().__post_init__()
+
+        if self.num_classes <= 0:
+            raise ValueError(f"num_classes must be positive, got {self.num_classes}")
+
+        self.d_vocab_out = self.num_classes

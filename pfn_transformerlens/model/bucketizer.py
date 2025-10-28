@@ -23,6 +23,7 @@ HALF_NORMAL_ICDF_AT_TARGET = float(
 )
 SQRT_TWO_OVER_PI = math.sqrt(2.0 / math.pi)
 LOG_SQRT_TWO_OVER_PI = math.log(SQRT_TWO_OVER_PI)
+LOG_HALF = math.log(0.5)
 
 
 def estimate_riemann_borders(
@@ -244,8 +245,10 @@ class Bucketizer(nn.Module):
             # Interior part: borders[0] <= y < borders[1]
             left_interior_mask = left_bucket_mask & (y >= borders[0])
             if left_interior_mask.any():
-                result[left_interior_mask] = gathered[left_interior_mask] - torch.log(
-                    selected_widths[left_interior_mask],
+                result[left_interior_mask] = (
+                    gathered[left_interior_mask]
+                    + LOG_HALF
+                    - torch.log(selected_widths[left_interior_mask])
                 )
 
             # Tail part: y < borders[0]
@@ -257,7 +260,7 @@ class Bucketizer(nn.Module):
                 )
                 distances = (borders[0] - y[left_tail_mask]).clamp_min(0.0)
                 log_pdf = self._half_normal_log_pdf(distances, left_scale)
-                result[left_tail_mask] = gathered[left_tail_mask] + log_pdf
+                result[left_tail_mask] = gathered[left_tail_mask] + LOG_HALF + log_pdf
 
         # Right bucket: split into interior and tail
         right_bucket_mask = bucket_indices == num_buckets - 1
@@ -265,8 +268,10 @@ class Bucketizer(nn.Module):
             # Interior part: borders[-2] <= y < borders[-1]
             right_interior_mask = right_bucket_mask & (y < borders[-1])
             if right_interior_mask.any():
-                result[right_interior_mask] = gathered[right_interior_mask] - torch.log(
-                    selected_widths[right_interior_mask],
+                result[right_interior_mask] = (
+                    gathered[right_interior_mask]
+                    + LOG_HALF
+                    - torch.log(selected_widths[right_interior_mask])
                 )
 
             # Tail part: y >= borders[-1]
@@ -278,7 +283,7 @@ class Bucketizer(nn.Module):
                 )
                 distances = (y[right_tail_mask] - borders[-1]).clamp_min(0.0)
                 log_pdf = self._half_normal_log_pdf(distances, right_scale)
-                result[right_tail_mask] = gathered[right_tail_mask] + log_pdf
+                result[right_tail_mask] = gathered[right_tail_mask] + LOG_HALF + log_pdf
 
         # Assert all values are finite
         assert torch.all(torch.isfinite(result)), "Log densities must be finite"

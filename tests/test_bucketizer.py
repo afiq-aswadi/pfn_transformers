@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import pytest
 import torch
 
@@ -147,21 +148,24 @@ def test_log_density_at_values_uses_half_normal_tails_for_unbounded() -> None:
 
     mid_bucket = int(bucketizer.bucketize(y[2:3]).item())
     mid_width = bucketizer.bucket_widths[mid_bucket].to(log_probs.dtype)
+    log_half = math.log(0.5)
 
     expected = torch.stack(
         [
             # True left tail: use half-normal
             log_probs[0, 0]
+            + log_half
             + Bucketizer._half_normal_log_pdf(
                 left_distance_tail,
                 left_scale,
             ),
             # Interior of bucket 0: use piecewise constant
-            log_probs[1, 0] - torch.log(left_width),
+            log_probs[1, 0] + log_half - torch.log(left_width),
             # Interior bucket: use piecewise constant
             log_probs[2, mid_bucket] - torch.log(mid_width),
             # True right tail: use half-normal
             log_probs[3, bucketizer.num_buckets - 1]
+            + log_half
             + Bucketizer._half_normal_log_pdf(
                 right_distance_tail,
                 right_scale,

@@ -13,6 +13,7 @@ dependencies = [
     "matplotlib>=3.10.7",
     "nbformat>=5.10.4",
     "pytest>=8.4.2",
+    "seaborn>=0.13.2",
     "torch>=2.9.0",
     "tqdm>=4.66.0",
     "transformer-lens>=2.16.1",

@@ -2,6 +2,19 @@
 
 Provides a unified interface for different data generation strategies,
 from probabilistic (prior/likelihood) to deterministic functions to fixed datasets.
+
+Example usage:
+    Single sequence generation:
+        >>> gen = DeterministicFunctionGenerator(...)
+        >>> x, y = gen.generate(seq_len=64)  # returns single sequence
+
+    Batch generation (use the standalone sample_batch function):
+        >>> from pfn_transformerlens.sampler.dataloader import sample_batch
+        >>> x_batch, y_batch = sample_batch(gen, batch_size=32, seq_len=64)
+        >>> # x_batch shape: (32, 64, input_dim), y_batch shape: (32, 64)
+
+    Note: Generators do NOT have a sample_batch method. Use the standalone
+    sample_batch function from dataloader module for batched sampling.
 """
 
 from typing import Any, Callable, Protocol, runtime_checkable

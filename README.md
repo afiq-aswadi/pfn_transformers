@@ -131,6 +131,44 @@ data_gen = SupervisedProbabilisticGenerator(
 - `UnsupervisedProbabilisticGenerator` - for unsupervised learning (generates y only)
 - `FixedDatasetGenerator` - sample from static dataset
 
+### Sampling Data from Generators
+
+Generators provide two ways to sample data:
+
+#### Single sequence generation (use `.generate()` method)
+
+```python
+# Generate a single sequence
+x, y = data_gen.generate(seq_len=64)
+# x shape: (64, input_dim), y shape: (64,)
+```
+
+#### Batch generation (use standalone `sample_batch` function)
+
+**Important**: Generators do NOT have a `.sample_batch()` method. Use the standalone function from the dataloader module:
+
+```python
+from pfn_transformerlens.sampler.dataloader import sample_batch
+
+# Generate a batch of sequences
+x_batch, y_batch = sample_batch(data_gen, batch_size=32, seq_len=64)
+# x_batch shape: (32, 64, input_dim), y_batch shape: (32, 64)
+
+# For unsupervised generators, x_batch will be None
+unsupervised_gen = UnsupervisedProbabilisticGenerator(prior, likelihood)
+x_batch, y_batch = sample_batch(unsupervised_gen, batch_size=32, seq_len=64)
+# x_batch is None, y_batch shape: (32, 64)
+```
+
+#### Using dataloaders in training
+
+The `train()` function handles batching automatically. You don't need to call `sample_batch` manually:
+
+```python
+# The train function uses build_dataloader internally
+model = train(data_gen, model_cfg, train_cfg)
+```
+
 ### Loading Models from Checkpoints
 
 Load from local checkpoint:

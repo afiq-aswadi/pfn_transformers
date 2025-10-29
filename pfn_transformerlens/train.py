@@ -72,6 +72,7 @@ class TrainingConfig:
         wandb_project: Wandb project name (falls back to WANDB_PROJECT env var).
         wandb_entity: Wandb entity/username (falls back to WANDB_ENTITY env var).
         wandb_run_name: Optional run name (wandb auto-generates if None).
+            Note: The parameter is wandb_run_name, not run_name.
         wandb_log_model: Whether to upload checkpoints as wandb artifacts.
         wandb_tags: Optional list of tags for the wandb run.
         wandb_notes: Optional notes/description for the wandb run.

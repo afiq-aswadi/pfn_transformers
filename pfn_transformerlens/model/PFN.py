@@ -52,10 +52,14 @@ class BasePFN(nn.Module, ABC):
     components during forward passes.
     """
 
+    transformer: HookedTransformer
+    input_proj: nn.Module
+    _bucketizer: Optional[Bucketizer]
+
     def __init__(self, config: BasePFNConfig):
         super().__init__()
         self.config = config
-        self._bucketizer: Optional[Bucketizer] = None
+        self._bucketizer = None
         self._setup_bucketizer()
         self._setup_input_proj()
         self.transformer = HookedTransformer(config)
@@ -150,6 +154,7 @@ class UnsupervisedPFN(BasePFN):
     """
 
     config: UnsupervisedPFNConfig
+    input_proj: nn.Embedding | nn.Linear
 
     def __init__(self, config: UnsupervisedPFNConfig):
         super().__init__(config)
@@ -398,6 +403,7 @@ class SupervisedPFN(BasePFN):
     """
 
     config: SupervisedRegressionPFNConfig | ClassificationPFNConfig
+    input_proj: nn.Linear
 
     def __init__(self, config: SupervisedRegressionPFNConfig | ClassificationPFNConfig):
         super().__init__(config)

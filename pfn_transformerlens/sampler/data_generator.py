@@ -32,6 +32,19 @@ class SupervisedDataGenerator(Protocol):
 
     Any supervised data generator must implement this interface to be compatible
     with the PFN training pipeline.
+
+    Example usage:
+        Single sequence generation:
+            >>> gen = DeterministicFunctionGenerator(...)
+            >>> x, y = gen.generate(seq_len=64)  # returns single sequence
+
+        Batch generation (use the standalone sample_batch function):
+            >>> from pfn_transformerlens.sampler.dataloader import sample_batch
+            >>> x_batch, y_batch = sample_batch(gen, batch_size=32, seq_len=64)
+            >>> # x_batch shape: (32, 64, input_dim), y_batch shape: (32, 64)
+
+        Note: Generators do NOT have a sample_batch method. Use the standalone
+        sample_batch function from dataloader module for batched sampling.
     """
 
     input_dim: int
@@ -58,6 +71,20 @@ class UnsupervisedDataGenerator(Protocol):
 
     Any unsupervised data generator must implement this interface to be compatible
     with the PFN training pipeline. No x values are needed for unsupervised models.
+
+    
+    Example usage:
+        Single sequence generation:
+            >>> gen = UnsupervisedProbabilisticGenerator(...)
+            >>> y = gen.generate(seq_len=64)  # returns single sequence
+
+        Batch generation (use the standalone sample_batch function):
+            >>> from pfn_transformerlens.sampler.dataloader import sample_batch
+            >>> x_batch, y_batch = sample_batch(gen, batch_size=32, seq_len=64)
+            >>> # x_batch is None, y_batch shape: (32, 64)
+
+        Note: Generators do NOT have a sample_batch method. Use the standalone
+        sample_batch function from dataloader module for batched sampling.
     """
 
     input_dim: int

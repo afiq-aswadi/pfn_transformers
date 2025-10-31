@@ -122,6 +122,57 @@ class BasePFN(nn.Module, ABC):
             )
         return self._bucketizer
 
+    def _prepare_transformer_input(
+        self,
+        hidden: Float[torch.Tensor, "batch seq d_model"],
+    ) -> tuple[
+        Float[torch.Tensor, "batch seq d_model"],
+        Float[torch.Tensor, "batch seq d_model"] | None,
+    ]:
+        """Mimic HookedTransformer.input_to_embed when bypassing internal embeddings.
+
+        We construct the residual stream (token embedding plus positional information)
+        because we call HookedTransformer with start_at_layer=0 and therefore skip the
+        built-in embedding logic. This keeps positional handling consistent across
+        discrete and continuous inputs.
+        """
+        residual = self.transformer.hook_embed(hidden)
+
+        if not getattr(self.config, "use_pos_emb", True):
+            return residual, None
+
+        pos_type = self.transformer.cfg.positional_embedding_type
+        if pos_type not in {"standard", "shortformer", "rotary", "alibi"}:
+            raise ValueError(
+                f"Unsupported positional_embedding_type='{pos_type}' for PFN models."
+            )
+
+        seq_len = residual.shape[1]
+        if seq_len > self.transformer.cfg.n_ctx:
+            raise ValueError(
+                f"sequence length {seq_len} exceeds model context "
+                f"{self.transformer.cfg.n_ctx}"
+            )
+
+        shortformer_pos_embed: Float[torch.Tensor, "batch seq d_model"] | None = None
+
+        if pos_type in {"standard", "shortformer"}:
+            pos = self.transformer.W_pos[:seq_len, :].to(
+                device=residual.device, dtype=residual.dtype
+            )
+            pos = pos.unsqueeze(0)
+            if residual.shape[0] != 1:
+                pos = pos.expand(residual.shape[0], -1, -1)
+            pos = self.transformer.hook_pos_embed(pos)
+
+            if pos_type == "standard":
+                residual = residual + pos
+            else:  # shortformer
+                shortformer_pos_embed = pos
+
+        # rotary and alibi are applied inside the transformer blocks, so nothing to add here.
+        return residual, shortformer_pos_embed
+
     @abstractmethod
     def predict_on_prompt(
         self, *args, **kwargs
@@ -201,18 +252,22 @@ class UnsupervisedPFN(BasePFN):
             y_reshaped = y.unsqueeze(-1)
             hidden = self.input_proj(y_reshaped)
 
+        residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)
+
         if return_cache:
             logits, cache = self.transformer.run_with_cache(
-                hidden,
+                residual,
                 start_at_layer=0,
                 return_type="logits",
+                shortformer_pos_embed=shortformer_pos_embed,
             )
             return logits, cache
         else:
             logits = self.transformer(
-                hidden,
+                residual,
                 start_at_layer=0,
                 return_type="logits",
+                shortformer_pos_embed=shortformer_pos_embed,
             )
             return logits
 
@@ -740,6 +795,7 @@ class SupervisedPFN(BasePFN):
 
         # Project to d_model dimension
         hidden = self.input_proj(xy_combined)
+        residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)
 
         # Create mask hook
         mask_hook = create_custom_mask_hook(
@@ -752,15 +808,17 @@ class SupervisedPFN(BasePFN):
         ):
             if return_cache:
                 logits, cache = self.transformer.run_with_cache(
-                    hidden,
+                    residual,
                     start_at_layer=0,
                     return_type="logits",
+                    shortformer_pos_embed=shortformer_pos_embed,
                 )
             else:
                 logits = self.transformer(
-                    hidden,
+                    residual,
                     start_at_layer=0,
                     return_type="logits",  # assert Tensor output
+                    shortformer_pos_embed=shortformer_pos_embed,
                 )
 
         predictions = self.output_proj(logits)
@@ -795,18 +853,21 @@ class SupervisedPFN(BasePFN):
         xy_combined[:, 1::2, -1] = y
 
         hidden = self.input_proj(xy_combined)
+        residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)
 
         if return_cache:
             logits, cache = self.transformer.run_with_cache(
-                hidden,
+                residual,
                 start_at_layer=0,
                 return_type="logits",
+                shortformer_pos_embed=shortformer_pos_embed,
             )
         else:
             logits = self.transformer(
-                hidden,
+                residual,
                 start_at_layer=0,
                 return_type="logits",
+                shortformer_pos_embed=shortformer_pos_embed,
             )
 
         predictions = self.output_proj(logits)  # type: ignore[arg-type]

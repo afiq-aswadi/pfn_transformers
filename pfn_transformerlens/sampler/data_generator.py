@@ -72,7 +72,7 @@ class UnsupervisedDataGenerator(Protocol):
     Any unsupervised data generator must implement this interface to be compatible
     with the PFN training pipeline. No x values are needed for unsupervised models.
 
-    
+
     Example usage:
         Single sequence generation:
             >>> gen = UnsupervisedProbabilisticGenerator(...)

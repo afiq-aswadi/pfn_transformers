@@ -209,6 +209,9 @@ class UnsupervisedPFN(BasePFN):
 
     def __init__(self, config: UnsupervisedPFNConfig):
         super().__init__(config)
+        if self.config.input_type == "discrete":
+            # share weights with transformer embedding so gradients accumulate
+            self.input_proj.weight = self.transformer.embed.W_E
 
     def _setup_input_proj(self) -> None:
         """Setup input projection based on input type."""
@@ -247,7 +250,18 @@ class UnsupervisedPFN(BasePFN):
 
         if self.config.input_type == "discrete":
             y_long = y.long()
-            hidden = self.input_proj(y_long)
+            if return_cache:
+                logits, cache = self.transformer.run_with_cache(
+                    y_long,
+                    return_type="logits",
+                )
+                return logits, cache
+            logits = self.transformer(
+                y_long,
+                return_type="logits",
+            )
+            return logits
+
         else:
             y_reshaped = y.unsqueeze(-1)
             hidden = self.input_proj(y_reshaped)

@@ -224,6 +224,7 @@ class UnsupervisedProbabilisticGenerator:
         """
         theta = self.prior.sample(torch.Size([]))
         # Create dummy x (zeros) for likelihood API compatibility
+        # TODO: make this None?
         x = torch.zeros((seq_len, self.input_dim))
         conditioned_likelihood = self.likelihood.condition_on_prior_and_input(theta, x)
         y = conditioned_likelihood.sample()
@@ -266,7 +267,7 @@ class DeterministicFunctionGenerator:
         ],
         input_dim: int,
         noise_std: float | None = 0.0,
-        x_distribution: Distribution | None = None,
+        x_distribution: Distribution = torch.distributions.Normal(0.0, 1.0),
     ):
         """Initialize deterministic function generator.
 
@@ -303,7 +304,7 @@ class DeterministicFunctionGenerator:
         self.function = function
         self.input_dim = input_dim
         self.noise_std = noise_std
-        self.x_distribution = x_distribution or torch.distributions.Normal(0.0, 1.0)
+        self.x_distribution = x_distribution
 
     def generate(
         self, seq_len: int

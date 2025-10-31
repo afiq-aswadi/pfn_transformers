@@ -49,7 +49,33 @@ class DiscreteTaskDistribution(Distribution):
     def sample(
         self, sample_shape: torch.Size | tuple[int, ...] = torch.Size()
     ) -> Float[torch.Tensor, "..."]:
-        """Sample task values by first sampling indices then looking up tasks."""
+        """
+        Sample task values by first sampling indices then looking up tasks.
+
+        Args:
+            sample_shape: Shape of the sample to draw. Defaults to empty tuple (single sample).
+
+        Returns:
+            Sampled task values with shape ``sample_shape + event_shape``.
+
+        Example:
+            >>> tasks = torch.tensor([1.0, 2.0, 3.0])
+            >>> dist = DiscreteTaskDistribution(tasks)
+            >>> # Single sample
+            >>> sample = dist.sample()
+            >>> # Shape: ()
+            >>> # Multiple samples
+            >>> samples = dist.sample((5,))
+            >>> # Shape: (5,)
+            >>> # Batch of samples
+            >>> batch_samples = dist.sample((3, 4))
+            >>> # Shape: (3, 4)
+            >>> # For multi-dimensional tasks
+            >>> tasks_2d = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+            >>> dist_2d = DiscreteTaskDistribution(tasks_2d)
+            >>> sample_2d = dist_2d.sample((10,))
+            >>> # Shape: (10, 2)
+        """
         indices = self.categorical.sample(sample_shape)
         return self.tasks[indices]
 
@@ -71,6 +97,7 @@ class DiscreteTaskDistribution(Distribution):
 
 
 class PriorDistribution(Distribution):
+    # TODO: is this slightly redundant
     """
     Vanilla prior distribution class.
     This is a simple wrapper around standard PyTorch distributions.
@@ -208,7 +235,16 @@ class LikelihoodDistribution(Distribution):
             )
         # Create a new distribution with current parameters and sample
         conditioned_dist = self._create_distribution_from_params(self._current_params)
-        return conditioned_dist.sample(sample_shape)
+        sample = conditioned_dist.sample(sample_shape)
+
+        # ensure discrete distributions return integer tensors
+        if isinstance(
+            conditioned_dist,
+            (torch.distributions.Bernoulli, torch.distributions.Categorical),
+        ):
+            sample = sample.long()
+
+        return sample
 
     def log_prob(self, value: Float[torch.Tensor, "..."]) -> Float[torch.Tensor, "..."]:
         """Compute log probability under the current parameters."""

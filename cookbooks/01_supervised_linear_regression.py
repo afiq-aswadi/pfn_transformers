@@ -1,207 +1,260 @@
 """
 Cookbook 1: Supervised Linear Regression
 
-Demonstrates training a PFN to learn linear functions of the form:
-    y = w·x + ε
-where w ~ N(0, 1) and ε ~ N(0, 0.1)
+Training a PFN (Prior-data Fitted Network) to learn
+linear functions through in-context learning.
 
-The PFN learns to perform in-context learning: given examples from one linear
-function, it predicts on new points with uncertainty quantification.
+We train a PFN to perform regression on linear functions of the form:
+    y = w·x + ε
+
+where:
+- w is a weight vector sampled from N(0, I)
+- x is the input feature vector
+- ε is Gaussian noise with std=0.1
+
+The trained PFN learns to identify which linear function it's seeing from a few
+examples, then predict on new points with uncertainty quantification.
 """
 
-import torch
-import matplotlib.pyplot as plt
+from dataclasses import dataclass
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import torch
+import tyro
+from einops import einsum
+from jaxtyping import Float
+
 from pfn_transformerlens import (
-    train,
-    TrainingConfig,
-    RegressionConfig,
     DeterministicGenerator,
+    RegressionConfig,
+    TrainingConfig,
+    sample_batch,
+    train,
 )
 
 
-def linear_function(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-    """Linear function: y = w·x (element-wise product, then sum over features)"""
-    return (w * x).sum(dim=-1)
+def linear_function(
+    x: Float[torch.Tensor, "seq_len input_dim"], w: Float[torch.Tensor, "input_dim"]
+) -> Float[torch.Tensor, "seq_len"]:
+    """Linear function: y = w·x (element-wise product, then sum over features).
+
+    Args:
+        x: input features of shape (seq_len, input_dim)
+        w: weight vector of shape (input_dim,)
+
+    Returns:
+        y: output of shape (seq_len,)
+    """
+    return einsum(x, w, "seq_len input_dim, input_dim -> seq_len")
 
 
-def main():
-    print("=" * 60)
-    print("Cookbook 1: Supervised Linear Regression")
-    print("=" * 60)
+@dataclass
+class ExpConfig:
+    """Configuration for linear regression cookbook experiment."""
 
-    # setup
-    input_dim = 5
+    # data generation parameters
+    input_dim: int = 5
+    noise_std: float = 0.1
+
+    # model architecture parameters
+    d_model: int = 128
+    n_layers: int = 4
+    n_heads: int = 4
+    d_head: int = 32
+    n_ctx: int = 128
+    d_vocab: int = 50  # number of buckets for distribution prediction
+
+    # bucketing parameters for distribution prediction
+    y_min: float = -5.0
+    y_max: float = 5.0
+
+    # training parameters
+    batch_size: int = 128
+    num_steps: int = 500  # reduced for faster demo
+    learning_rate: float = 1e-3
+    warmup_steps: int = 50
+    log_every: int = 100
+    use_wandb: bool = False
+
+    # visualization parameters
+    num_test_functions: int = 3  # number of functions to plot
+    seq_len: int = 50  # sequence length for visualization
+
+
+def main(config: ExpConfig) -> None:
     output_dir = Path(__file__).parent / "outputs" / "01_linear_regression"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # data generator: sample weight vectors from standard normal
-    # use Independent to create a multivariate distribution
-    print("\nSetting up data generator...")
-    prior = torch.distributions.Independent(
-        torch.distributions.Normal(torch.zeros(input_dim), torch.ones(input_dim)),
-        reinterpreted_batch_ndims=1,
+    # set up data generator
+    # we use MultivariateNormal to sample weight vectors from N(0, I)
+    prior = torch.distributions.MultivariateNormal(
+        loc=torch.zeros(config.input_dim),
+        covariance_matrix=torch.eye(config.input_dim),
     )
     data_gen = DeterministicGenerator(
         prior=prior,
         function=linear_function,
-        input_dim=input_dim,
-        noise_std=0.1,
+        input_dim=config.input_dim,
+        noise_std=config.noise_std,
     )
 
-    # model config: small model for quick training
-    print("Configuring model...")
+    # configure model architecture
+    # the model uses bucket-based distribution prediction with uniform buckets
     model_config = RegressionConfig(
-        d_model=128,
-        n_layers=4,
-        n_heads=4,
-        d_head=32,
-        n_ctx=128,
-        d_vocab=50,  # number of buckets for distribution prediction
-        input_dim=input_dim,
+        d_model=config.d_model,
+        n_layers=config.n_layers,
+        n_heads=config.n_heads,
+        d_head=config.d_head,
+        n_ctx=config.n_ctx,
+        d_vocab=config.d_vocab,
+        input_dim=config.input_dim,
         prediction_type="distribution",
         bucket_type="uniform",
-        y_min=-5.0,
-        y_max=5.0,
+        y_min=config.y_min,
+        y_max=config.y_max,
         mask_type="autoregressive-pfn",
         act_fn="gelu",
     )
 
-    # training config: short training for demo
-    print("Configuring training...")
+    # configure training
     training_config = TrainingConfig(
-        batch_size=128,
-        num_steps=500,  # reduced for faster demo
-        learning_rate=1e-3,
-        warmup_steps=50,
-        log_every=100,
-        use_wandb=False,
+        batch_size=config.batch_size,
+        num_steps=config.num_steps,
+        learning_rate=config.learning_rate,
+        warmup_steps=config.warmup_steps,
+        log_every=config.log_every,
+        use_wandb=config.use_wandb,
     )
 
     # train the model
-    print(f"\nTraining for {training_config.num_steps} steps...")
     model = train(data_gen, model_config, training_config)
-    print("Training complete!")
 
-    # test in-context learning on multiple functions
-    print("\nGenerating plots...")
+    # move model to appropriate device for inference
     device = next(model.parameters()).device
-    num_test_functions = 3
-    num_context = 20
-    num_query = 30
 
-    fig, axes = plt.subplots(1, num_test_functions, figsize=(15, 4))
+    # visualize in-context learning on multiple random linear functions
+    # we generate real sequences with noise and show the model's autoregressive predictions
+    # uncertainty should decrease as the model sees more examples
+    fig, axes = plt.subplots(1, config.num_test_functions, figsize=(15, 4))
 
-    for idx in range(num_test_functions):
-        # sample a random linear function (weight vector)
-        w_true = torch.randn(input_dim)
+    for idx in range(config.num_test_functions):
+        # sample a real sequence from the data generator (with noise)
+        x_batch, y_batch = sample_batch(data_gen, batch_size=1, seq_len=config.seq_len)
+        x_seq = x_batch[0].to(device)  # (seq_len, input_dim)
+        y_seq = y_batch[0].to(device)  # (seq_len,)
 
-        # generate context examples
-        x_context = torch.randn(num_context, input_dim)
-        y_context = linear_function(x_context, w_true) + 0.1 * torch.randn(num_context)
-
-        # generate query points
-        x_query = torch.randn(num_query, input_dim)
-        y_query_true = linear_function(x_query, w_true)
-
-        # predict with PFN (move tensors to device)
-        x_all = torch.cat([x_context, x_query], dim=0).to(device)
-        y_all = torch.cat([y_context, torch.zeros(num_query)], dim=0).to(device)
-
+        # run model to get predictions at all positions
+        # the model predicts autoregressively: prediction at position i uses
+        # information from positions 0, 1, ..., i-1
         with torch.no_grad():
-            pred = model.predict_on_prompt(x_all, y_all)
+            pred = model.predict_on_prompt(x_seq, y_seq)
 
-        # extract predictions for query points
-        query_probs = pred.probs[num_context:].cpu()
-        y_grid = pred.y_grid.cpu()
+        # extract predictions for all positions
+        probs = pred.probs.cpu()  # (seq_len, d_vocab)
+        y_grid = pred.y_grid.cpu()  # (d_vocab,)
+        y_true = y_seq.cpu()  # (seq_len,)
 
-        # compute mean and std from distribution
-        y_pred_mean = (query_probs * y_grid).sum(dim=-1)
+        # compute mean and std from predicted distribution
+        y_pred_mean = (probs * y_grid).sum(dim=-1)
         y_pred_std = torch.sqrt(
-            (query_probs * (y_grid - y_pred_mean.unsqueeze(-1)) ** 2).sum(dim=-1)
+            (probs * (y_grid - y_pred_mean.unsqueeze(-1)) ** 2).sum(dim=-1)
         )
 
-        # plot: compare predictions vs true values
+        # visualize predictions vs ground truth
+        # the uncertainty bands should get thinner as we move along the sequence
         ax = axes[idx]
-        x_plot = torch.arange(num_query)
-        ax.plot(x_plot, y_query_true.cpu(), "o", label="True", alpha=0.7)
-        ax.plot(x_plot, y_pred_mean, "s", label="Predicted", alpha=0.7)
+        x_plot = torch.arange(config.seq_len)
+        ax.plot(x_plot, y_true, "o", label="True", alpha=0.7, markersize=4)
+        ax.plot(x_plot, y_pred_mean, "s", label="Predicted", alpha=0.7, markersize=4)
         ax.fill_between(
             x_plot,
             y_pred_mean - 2 * y_pred_std,
             y_pred_mean + 2 * y_pred_std,
             alpha=0.3,
-            label="±2σ",
+            label=r"$\pm 2\sigma$",
         )
-        ax.set_xlabel("Query Point")
+        ax.set_xlabel("Position in sequence")
         ax.set_ylabel("y")
         ax.set_title(f"Function {idx + 1}")
         ax.legend()
         ax.grid(True, alpha=0.3)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
     plt.tight_layout()
-    plt.savefig(output_dir / "in_context_predictions.png", dpi=150)
-    print(f"Saved: {output_dir / 'in_context_predictions.png'}")
+    plt.savefig(output_dir / "predictions_comparison.png", dpi=400, bbox_inches="tight")
     plt.close()
 
-    # detailed plot for one function
+    # create detailed analysis plot for one function
+    # this shows (1) prediction accuracy and (2) predicted distributions at different positions
     fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-    # regenerate for detailed analysis
-    w_true = torch.randn(input_dim)
-    x_context = torch.randn(num_context, input_dim)
-    y_context = linear_function(x_context, w_true) + 0.1 * torch.randn(num_context)
-    x_query = torch.randn(num_query, input_dim)
-    y_query_true = linear_function(x_query, w_true)
-
-    x_all = torch.cat([x_context, x_query], dim=0).to(device)
-    y_all = torch.cat([y_context, torch.zeros(num_query)], dim=0).to(device)
+    # sample a new sequence for detailed analysis
+    x_batch, y_batch = sample_batch(data_gen, batch_size=1, seq_len=config.seq_len)
+    x_seq = x_batch[0].to(device)
+    y_seq = y_batch[0].to(device)
 
     with torch.no_grad():
-        pred = model.predict_on_prompt(x_all, y_all)
+        pred = model.predict_on_prompt(x_seq, y_seq)
 
-    # plot 1: predictions vs true
-    query_probs = pred.probs[num_context:].cpu()
+    probs = pred.probs.cpu()
     y_grid = pred.y_grid.cpu()
-    y_pred_mean = (query_probs * y_grid).sum(dim=-1)
+    y_true = y_seq.cpu()
+
+    y_pred_mean = (probs * y_grid).sum(dim=-1)
     y_pred_std = torch.sqrt(
-        (query_probs * (y_grid - y_pred_mean.unsqueeze(-1)) ** 2).sum(dim=-1)
+        (probs * (y_grid - y_pred_mean.unsqueeze(-1)) ** 2).sum(dim=-1)
     )
 
+    # plot 1: scatter plot of predicted vs true values
+    # points on the diagonal line indicate perfect predictions
     ax = axes[0]
-    ax.scatter(y_query_true.cpu(), y_pred_mean, alpha=0.6)
-    ax.errorbar(
-        y_query_true.cpu(), y_pred_mean, yerr=2 * y_pred_std, fmt="none", alpha=0.3
-    )
-    lim_min = min(y_query_true.min().item(), y_pred_mean.min().item())
-    lim_max = max(y_query_true.max().item(), y_pred_mean.max().item())
+    ax.scatter(y_true, y_pred_mean, alpha=0.6)
+    ax.errorbar(y_true, y_pred_mean, yerr=2 * y_pred_std, fmt="none", alpha=0.3)
+    lim_min = min(y_true.min().item(), y_pred_mean.min().item())
+    lim_max = max(y_true.max().item(), y_pred_mean.max().item())
     ax.plot([lim_min, lim_max], [lim_min, lim_max], "k--", alpha=0.5, label="Perfect")
     ax.set_xlabel("True y")
-    ax.set_ylabel("Predicted y (mean)")
-    ax.set_title("Prediction Accuracy")
+    ax.set_ylabel("Predicted y")
+    ax.set_title("Prediction accuracy")
     ax.legend()
     ax.grid(True, alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
-    # plot 2: predicted distribution for a few query points
+    # plot 2: show predicted distributions at different positions in the sequence
+    # early positions should have wider distributions (more uncertainty)
+    # later positions should have narrower distributions (less uncertainty)
     ax = axes[1]
-    for i in range(min(5, num_query)):
-        ax.plot(y_grid, query_probs[i], alpha=0.7, label=f"Query {i + 1}")
-        ax.axvline(y_query_true[i].item(), color=f"C{i}", linestyle="--", alpha=0.5)
+    # show distributions at positions: 0, 10, 20, 30, 40 (evenly spaced)
+    positions_to_plot = [
+        0,
+        config.seq_len // 4,
+        config.seq_len // 2,
+        3 * config.seq_len // 4,
+        config.seq_len - 1,
+    ]
+    for pos in positions_to_plot:
+        ax.plot(y_grid, probs[pos], alpha=0.7, label=f"Position {pos}")
+        ax.axvline(
+            y_true[pos].item(),
+            color=f"C{positions_to_plot.index(pos)}",
+            linestyle="--",
+            alpha=0.5,
+        )
     ax.set_xlabel("y")
     ax.set_ylabel("Probability")
-    ax.set_title("Predicted Distributions (dashed = true value)")
+    ax.set_title("Predicted distributions at different positions")
     ax.legend()
     ax.grid(True, alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
     plt.tight_layout()
-    plt.savefig(output_dir / "detailed_analysis.png", dpi=150)
-    print(f"Saved: {output_dir / 'detailed_analysis.png'}")
+    plt.savefig(output_dir / "detailed_analysis.png", dpi=400, bbox_inches="tight")
     plt.close()
-
-    print(f"\nAll outputs saved to: {output_dir}")
-    print("=" * 60)
 
 
 if __name__ == "__main__":
-    main()
+    tyro.cli(main)

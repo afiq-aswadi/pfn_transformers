@@ -210,7 +210,8 @@ class TestUnsupervisedLoss:
         _, metrics = compute_loss(model, None, y)
 
         assert "accuracy" in metrics
-        assert 0.0 <= metrics["accuracy"] <= 1.0
+        acc = metrics["accuracy"]
+        assert isinstance(acc, float) and 0.0 <= acc <= 1.0
 
     def test_loss_shape_alignment(self) -> None:
         """Test that loss uses correct shape alignment (logits[:-1] vs targets[1:])."""
@@ -348,7 +349,8 @@ class TestUnsupervisedEdgeCases:
         loss, metrics = compute_loss(model, None, y)
 
         assert torch.isfinite(loss)
-        assert metrics["accuracy"] >= 0.0
+        acc = metrics["accuracy"]
+        assert isinstance(acc, float) and acc >= 0.0
 
     def test_large_vocab(self) -> None:
         """Test with large vocabulary size."""

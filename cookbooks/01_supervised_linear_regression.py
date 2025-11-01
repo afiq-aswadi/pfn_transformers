@@ -141,6 +141,7 @@ def main(config: ExpConfig) -> None:
     for idx in range(config.num_test_functions):
         # sample a real sequence from the data generator (with noise)
         x_batch, y_batch = sample_batch(data_gen, batch_size=1, seq_len=config.seq_len)
+        assert x_batch is not None
         x_seq = x_batch[0].to(device)  # (seq_len, input_dim)
         y_seq = y_batch[0].to(device)  # (seq_len,)
 
@@ -192,6 +193,7 @@ def main(config: ExpConfig) -> None:
 
     # sample a new sequence for detailed analysis
     x_batch, y_batch = sample_batch(data_gen, batch_size=1, seq_len=config.seq_len)
+    assert x_batch is not None
     x_seq = x_batch[0].to(device)
     y_seq = y_batch[0].to(device)
 

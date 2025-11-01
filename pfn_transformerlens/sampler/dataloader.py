@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Tuple
+from typing import TYPE_CHECKING
 
 import torch
 from jaxtyping import Float
@@ -55,9 +55,7 @@ def sample_batch(
     data_generator: DataGenerator,
     batch_size: int,
     seq_len: int,
-) -> Tuple[
-    Float[torch.Tensor, "batch seq input_dim"] | None, Float[torch.Tensor, "batch seq"]
-]:
+) -> tuple[Float[torch.Tensor, "batch seq input_dim"] | None, Float[torch.Tensor, "batch seq"]]:
     """Sample a batch of sequences from a data generator.
 
     Args:

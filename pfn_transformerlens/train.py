@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -91,7 +91,7 @@ class TrainingConfig:
     save_checkpoint: bool = True
     save_every: int = 1000
     checkpoint_dir: str = "checkpoints"
-    eval_every: Optional[int] = None
+    eval_every: int | None = None
     eval_batches: int = 10
     device: str = "auto"
     use_wandb: bool = False
@@ -118,7 +118,7 @@ def _compute_distributional_nll(
     targets: Float[torch.Tensor, "batch seq"],
     bucketizer: Bucketizer,
     compute_mse: bool = False,
-) -> Tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
+) -> tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
     """Compute distributional NLL loss and optional MSE metric.
 
     Args:
@@ -151,7 +151,7 @@ def compute_unsupervised_loss(
     y: Float[torch.Tensor, "batch seq"],
     *,
     log_distributional_mse: bool = False,
-) -> Tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
+) -> tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
     """Compute loss for unsupervised (next-token/next-value prediction) models.
 
     Args:
@@ -227,7 +227,7 @@ def compute_supervised_loss(
     y: Float[torch.Tensor, "batch seq"],
     *,
     log_distributional_mse: bool = False,
-) -> Tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
+) -> tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
     """Compute loss for supervised (classification or regression) models.
 
     Args:
@@ -281,7 +281,7 @@ def compute_loss(
     y: Float[torch.Tensor, "batch seq"],
     *,
     log_distributional_mse: bool = False,
-) -> Tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
+) -> tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
     """Compute PFN loss and metrics.
 
     Delegates to specialized functions for supervised vs unsupervised models.
@@ -369,8 +369,8 @@ def train(
     model_config: BasePFNConfig,
     training_config: TrainingConfig,
     *,
-    resume_from: Optional[str] = None,
-    eval_data_generator: Optional[DataGenerator] = None,
+    resume_from: str | None = None,
+    eval_data_generator: DataGenerator | None = None,
     data_config: Any = None,
 ) -> BasePFN:
     """Run a general PFN training loop.

@@ -125,7 +125,8 @@ def main(config: ExpConfig) -> None:
         prompt_y = polynomial_function(prompt_x, coeffs)
 
         with torch.no_grad():
-            pred: PointPrediction = model.predict_on_prompt(prompt_x, prompt_y)
+            pred = model.predict_on_prompt(prompt_x, prompt_y)
+            assert isinstance(pred, PointPrediction)
 
         preds = pred.preds.squeeze(-1).cpu()
         true_vals = prompt_y.cpu()

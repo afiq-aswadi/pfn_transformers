@@ -10,7 +10,7 @@ from jaxtyping import Float
 from torch.distributions import Normal
 from torch.utils.data import DataLoader
 
-from pfn_transformerlens.model.configs import PFNConfig
+from pfn_transformerlens.model.configs import SupervisedRegressionPFNConfig
 from pfn_transformerlens.sampler.data_generator import SupervisedProbabilisticGenerator
 from pfn_transformerlens.sampler.dataloader import sample_batch
 from pfn_transformerlens.sampler.prior_likelihood import (
@@ -64,7 +64,7 @@ def test_sampler_batch_shapes_and_collation() -> None:
 
     prior = PriorDistribution(Normal(0.0, 1.0))
     likelihood = _make_linear_likelihood(noise_std, input_dim=D)
-    cfg = PFNConfig(
+    cfg = SupervisedRegressionPFNConfig(
         d_model=32,
         n_layers=1,
         n_heads=1,
@@ -99,7 +99,7 @@ def test_sampler_batch_shapes_mismatched_internal_batch() -> None:
 
     prior = PriorDistribution(Normal(0.0, 1.0))
     likelihood = _make_linear_likelihood(0.2, input_dim=D)
-    cfg = PFNConfig(
+    cfg = SupervisedRegressionPFNConfig(
         d_model=32,
         n_layers=1,
         n_heads=1,
@@ -155,7 +155,7 @@ def test_sampler_conditioning_per_item_means_with_constant_x(
     monkeypatch.setattr(prior, "sample", lambda sample_shape: next(theta_iter))
 
     likelihood = _make_linear_likelihood(noise_std, input_dim=D)
-    cfg = PFNConfig(
+    cfg = SupervisedRegressionPFNConfig(
         d_model=32,
         n_layers=1,
         n_heads=1,
@@ -201,7 +201,7 @@ def test_sampler_empirical_y_stats_match_expectation() -> None:
 
     prior = PriorDistribution(Normal(0.0, 1.0))
     likelihood = _make_linear_likelihood(noise_std, input_dim=D)
-    cfg = PFNConfig(
+    cfg = SupervisedRegressionPFNConfig(
         d_model=32,
         n_layers=1,
         n_heads=1,
@@ -258,7 +258,7 @@ def test_y_over_x_constant_when_noise_zero(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(prior, "sample", lambda sample_shape: next(theta_iter))
 
     likelihood = _make_linear_likelihood(noise_std, input_dim=D)
-    cfg = PFNConfig(
+    cfg = SupervisedRegressionPFNConfig(
         d_model=32,
         n_layers=1,
         n_heads=1,
@@ -315,7 +315,7 @@ def test_y_over_x_near_constant_when_noise_tiny(
     monkeypatch.setattr(prior, "sample", lambda sample_shape: next(theta_iter))
 
     likelihood = _make_linear_likelihood(noise_std, input_dim=D)
-    cfg = PFNConfig(
+    cfg = SupervisedRegressionPFNConfig(
         d_model=32,
         n_layers=1,
         n_heads=1,

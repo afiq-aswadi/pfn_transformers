@@ -884,9 +884,7 @@ class SupervisedPFN(BasePFN):
                 shortformer_pos_embed=shortformer_pos_embed,
             )
 
-        # TODO: Fix type: ignore comment - violates coding conventions
-        #       (same issue as bucketizer.py - arg-type mismatch)
-        predictions = self.output_proj(logits)  # type: ignore[arg-type]
+        predictions = self.output_proj(logits)
 
         if return_cache:
             return predictions, cache
@@ -894,7 +892,6 @@ class SupervisedPFN(BasePFN):
 
 
 def PFNModel(config: BasePFNConfig) -> BasePFN:
-    # TODO: remove redundancy
     """Factory function to create the appropriate PFN model based on config type.
 
     Maintains backward compatibility while using the new class hierarchy.

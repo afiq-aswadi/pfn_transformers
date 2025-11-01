@@ -22,7 +22,6 @@ class ClassificationPFNConfig(BasePFNConfig):
     num_classes: int = 2
     mask_type: Literal["autoregressive-pfn", "gpt2"] = "autoregressive-pfn"
 
-    # TODO: is this really necessary... like can't we just use d_vocab_out directly...
     def __post_init__(self) -> None:
         super().__post_init__()
 

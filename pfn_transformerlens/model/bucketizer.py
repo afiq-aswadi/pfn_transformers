@@ -1,20 +1,14 @@
 from __future__ import annotations
 
-# TODO: Fix type: ignore comments (lines 150, 160) - violates coding conventions.
-#       Should either fix the underlying type issue with proper type narrowing/overloads
-#       or configure the suppression in pyproject.toml instead of inline comments.
-
 import math
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import Literal, Optional
 from warnings import warn
 
 import torch
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 
-# TODO: why do we need this?
-if TYPE_CHECKING:  # pragma: no cover
-    from .configs.regression import SupervisedRegressionPFNConfig
+from .configs.regression import SupervisedRegressionPFNConfig
 
 BucketType = Literal["uniform", "riemann"]
 BucketSupport = Literal["bounded", "unbounded"]

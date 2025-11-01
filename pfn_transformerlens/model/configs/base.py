@@ -27,11 +27,4 @@ class BasePFNConfig(HookedTransformerConfig):
     normalization_type: str = "LN"
 
     def __post_init__(self) -> None:
-        # TODO: ?
-        try:
-            super().__post_init__()
-        except AttributeError:
-            pass
-
-        if not self.use_pos_emb:
-            pass
+        super().__post_init__()

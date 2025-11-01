@@ -259,6 +259,10 @@ def compute_loss(
     *,
     log_distributional_mse: bool = False,
 ) -> Tuple[Float[torch.Tensor, ""], dict[str, float]]:
+    # TODO: refactor! This function is ~200 lines - consider splitting into:
+    #       - compute_supervised_loss() for supervised models
+    #       - compute_unsupervised_loss() for unsupervised models
+    #       This would improve readability and make testing easier
     """Compute PFN loss and metrics.
 
     Supports distributional NLL, pointwise MSE, classification CE, or unsupervised CE.

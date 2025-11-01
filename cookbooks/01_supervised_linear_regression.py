@@ -83,7 +83,7 @@ class ExpConfig:
 
 
 def main(config: ExpConfig) -> None:
-    output_dir = Path(__file__).parent / "outputs" / "01_linear_regression"
+    output_dir = Path(__file__).parent / "outputs" / "01_linear_regression" 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # set up data generator

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# TODO: Fix type: ignore comments (lines 150, 160) - violates coding conventions.
+#       Should either fix the underlying type issue with proper type narrowing/overloads
+#       or configure the suppression in pyproject.toml instead of inline comments.
+
 import math
 from typing import TYPE_CHECKING, Literal, Optional
 from warnings import warn
@@ -138,8 +142,8 @@ class Bucketizer(nn.Module):
     @classmethod
     def from_config(cls, config: SupervisedRegressionPFNConfig) -> "Bucketizer":
         return cls(
-            bucket_type=config.bucket_type,  # type: ignore[arg-type]
-            bucket_support=config.bucket_support,  # type: ignore[arg-type]
+            bucket_type=config.bucket_type,  
+            bucket_support=config.bucket_support, 
             d_vocab=config.d_vocab,
             y_min=config.y_min,
             y_max=config.y_max,

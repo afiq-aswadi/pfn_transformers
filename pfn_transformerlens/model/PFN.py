@@ -884,6 +884,8 @@ class SupervisedPFN(BasePFN):
                 shortformer_pos_embed=shortformer_pos_embed,
             )
 
+        # TODO: Fix type: ignore comment - violates coding conventions
+        #       (same issue as bucketizer.py - arg-type mismatch)
         predictions = self.output_proj(logits)  # type: ignore[arg-type]
 
         if return_cache:

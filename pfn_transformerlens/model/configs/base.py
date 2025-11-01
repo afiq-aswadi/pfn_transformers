@@ -1,5 +1,9 @@
 """Base configuration class for PFN models."""
 
+# TODO: Extract shared bucket validation logic from SupervisedRegressionPFNConfig and
+#       UnsupervisedPFNConfig into a shared validator function to reduce duplication
+#       (lines 61-85 in regression.py and 69-84 in unsupervised.py)
+
 from dataclasses import dataclass
 
 from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
@@ -23,6 +27,7 @@ class BasePFNConfig(HookedTransformerConfig):
     normalization_type: str = "LN"
 
     def __post_init__(self) -> None:
+        # TODO: ?
         try:
             super().__post_init__()
         except AttributeError:

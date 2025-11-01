@@ -16,6 +16,9 @@ Usage:
     wandb agent <entity>/<project>/<sweep_id>
 """
 
+# TODO: Replace print statements with proper logging (Python logging module)
+#       Currently has decorative prints like print("=" * 60) which violates conventions
+
 from dataclasses import dataclass
 import os
 import subprocess

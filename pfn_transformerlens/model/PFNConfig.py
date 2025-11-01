@@ -7,6 +7,7 @@ from transformer_lens.HookedTransformerConfig import HookedTransformerConfig
 
 @dataclass
 class PFNConfig(HookedTransformerConfig):
+    # TODO: redundant, remove
     """Configuration class for Prior-Fitted Networks (PFNs).
 
     Extends HookedTransformerConfig to include PFN-specific parameters for
@@ -48,6 +49,7 @@ class PFNConfig(HookedTransformerConfig):
         output dimension for point predictions. Also sets bucket_type to None
         for point predictions since bucketing is not needed.
         """
+        # TODO: ?
         try:
             super().__post_init__()
         except AttributeError:

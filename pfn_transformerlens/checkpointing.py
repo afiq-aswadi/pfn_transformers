@@ -62,6 +62,7 @@ def save_checkpoint(
     model_config: BasePFNConfig,
     training_config,  # TrainingConfig - avoid circular import
     metadata: CheckpointMetadata,
+    scheduler_state: dict | None = None,
 ) -> None:
     """
     Save checkpoint with v2 format.
@@ -74,25 +75,27 @@ def save_checkpoint(
         model_config: Model configuration
         training_config: Training configuration
         metadata: Checkpoint metadata with wandb/git info
+        scheduler_state: Optional scheduler.state_dict()
     """
-    torch.save(
-        {
-            "checkpoint_version": 2,
-            "step": step,
-            "model_state_dict": model_state,
-            "optimizer_state_dict": optimizer_state,
-            "model_config": model_config,
-            "training_config": training_config,
-            "metadata": {
-                "timestamp": metadata.timestamp,
-                "wandb_run_id": metadata.wandb_run_id,
-                "wandb_run_name": metadata.wandb_run_name,
-                "wandb_run_url": metadata.wandb_run_url,
-                "git_hash": metadata.git_hash,
-            },
+    checkpoint = {
+        "checkpoint_version": 2,
+        "step": step,
+        "model_state_dict": model_state,
+        "optimizer_state_dict": optimizer_state,
+        "model_config": model_config,
+        "training_config": training_config,
+        "metadata": {
+            "timestamp": metadata.timestamp,
+            "wandb_run_id": metadata.wandb_run_id,
+            "wandb_run_name": metadata.wandb_run_name,
+            "wandb_run_url": metadata.wandb_run_url,
+            "git_hash": metadata.git_hash,
         },
-        checkpoint_path,
-    )
+    }
+    if scheduler_state is not None:
+        checkpoint["scheduler_state_dict"] = scheduler_state
+
+    torch.save(checkpoint, checkpoint_path)
 
 
 def load_checkpoint(

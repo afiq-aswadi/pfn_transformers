@@ -44,7 +44,8 @@ from pfn_transformerlens.sampler.prior_likelihood import (
 from pfn_transformerlens.sampler.prior_likelihood import (
     PriorDistribution as Prior,
 )
-from pfn_transformerlens.train import TrainingConfig, WandbLogger, train
+from pfn_transformerlens.train import TrainingConfig, train
+from pfn_transformerlens.wandb_logger import WandbLogger
 
 # Rename wandb_utils to wandb for cleaner imports
 wandb = wandb_utils

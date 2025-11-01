@@ -142,8 +142,8 @@ class Bucketizer(nn.Module):
     @classmethod
     def from_config(cls, config: SupervisedRegressionPFNConfig) -> "Bucketizer":
         return cls(
-            bucket_type=config.bucket_type,  
-            bucket_support=config.bucket_support, 
+            bucket_type=config.bucket_type,
+            bucket_support=config.bucket_support,
             d_vocab=config.d_vocab,
             y_min=config.y_min,
             y_max=config.y_max,

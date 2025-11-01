@@ -13,13 +13,9 @@ For training w/ multiple GPUs, just use simple-gpu-scheduler (https://pypi.org/p
 
 """
 # TODO: finetuning?
-# TODO: better naming scheme... or at least better way to specify where checkpoints are saved... (check: how do people do it in huggingface/wandb?)
-# TODO: training w/ multiple GPUs, uploading to wandb, logging training via wandb etc
-# TODO: easy way to train config sweeps + over gpus?
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Tuple
@@ -27,6 +23,7 @@ from typing import Any, Optional, Tuple
 import torch
 import torch.nn as nn
 from jaxtyping import Float
+from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 
 from pfn_transformerlens.checkpointing import (
@@ -41,8 +38,10 @@ from pfn_transformerlens.model.configs import (
     UnsupervisedPFNConfig,
 )
 from pfn_transformerlens.model.PFN import BasePFN, PFNModel, UnsupervisedPFN
+from pfn_transformerlens.model.bucketizer import Bucketizer
 from pfn_transformerlens.sampler.data_generator import DataGenerator
 from pfn_transformerlens.sampler.dataloader import build_dataloader, sample_batch
+from pfn_transformerlens.wandb_logger import WandbLogger
 
 
 @dataclass
@@ -114,253 +113,140 @@ class TrainingConfig:
         return self.device
 
 
-class WandbLogger:
-    """Lightweight wandb logging wrapper.
+def _compute_distributional_nll(
+    logits: Float[torch.Tensor, "batch seq d_vocab"],
+    targets: Float[torch.Tensor, "batch seq"],
+    bucketizer: Bucketizer,
+    compute_mse: bool = False,
+) -> Tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
+    """Compute distributional NLL loss and optional MSE metric.
 
-    Handles wandb initialization, metric logging, and checkpoint uploads.
-    No-op when use_wandb=False. Lazy imports wandb only when enabled.
+    Args:
+        logits: Model output logits over bucket vocabulary.
+        targets: Target continuous values.
+        bucketizer: Bucketizer for converting logits to densities.
+        compute_mse: Whether to compute approximate MSE via argmax over buckets.
+
+    Returns:
+        Tuple of (loss, metrics_dict).
     """
 
-    def __init__(
-        self,
-        training_config: TrainingConfig,
-        model_config: BasePFNConfig,
-        data_config: Any = None,
-    ) -> None:
-        self.enabled = training_config.use_wandb
-        self.run_id: str | None = None
-        self.run_name: str | None = None
-        self.run_url: str | None = None
+    log_density_at_targets = bucketizer.log_density_at_values(logits, targets)
+    loss = -log_density_at_targets.mean()
+    metrics = {"loss": float(loss.item()), "loss_type": "NLL"}
 
-        # Store configs for artifact metadata
-        self.model_config = model_config
-        self.training_config = training_config
-        self.data_config = data_config
+    if compute_mse:
+        with torch.no_grad():
+            log_densities = bucketizer.log_bucket_densities(logits)
+            pred_buckets = log_densities.argmax(dim=-1)
+            pred_y = bucketizer.decode(pred_buckets)
+            mse = nn.functional.mse_loss(pred_y, targets, reduction="mean")
+        metrics["mse"] = float(mse.item())
 
-        if not self.enabled:
-            return
-
-        # lazy import wandb only if enabled
-        try:
-            import wandb
-
-            self.wandb = wandb
-        except ImportError:
-            raise ImportError(
-                "wandb is required for logging. Install with: uv sync --extra wandb"
-            )
-
-        # read env vars as fallbacks
-        project = training_config.wandb_project or os.getenv("WANDB_PROJECT")
-        entity = training_config.wandb_entity or os.getenv("WANDB_ENTITY")
-
-        # build config dict
-        wandb_config = {
-            "model": model_config.__dict__,
-            "training": training_config.__dict__,
-        }
-        if data_config is not None:
-            from dataclasses import asdict, is_dataclass
-
-            if is_dataclass(data_config):
-                wandb_config["data"] = asdict(data_config)
-            else:
-                raise TypeError("data_config must be a dataclass")
-
-        # check if wandb is already initialized (e.g., by wandb sweep agent)
-        if self.wandb.run is None:
-            # initialize wandb run
-            self.wandb.init(
-                project=project,
-                entity=entity,
-                name=training_config.wandb_run_name,
-                tags=training_config.wandb_tags,
-                notes=training_config.wandb_notes,
-                config=wandb_config,
-            )
-        else:
-            # wandb already initialized (sweep agent), just update config
-            self.wandb.config.update(wandb_config, allow_val_change=True)
-
-        # Store run info for checkpoint metadata
-        if self.wandb.run is not None:
-            self.run_id = self.wandb.run.id
-            self.run_name = self.wandb.run.name
-            self.run_url = self.wandb.run.url
-
-        self.log_model = training_config.wandb_log_model
-
-    def log(self, metrics: dict[str, float], step: int) -> None:
-        """Log metrics to wandb."""
-        if not self.enabled:
-            return
-        self.wandb.log(metrics, step=step)
-
-    def log_checkpoint(
-        self,
-        checkpoint_path: str | Path,
-        step: int,
-        metadata: CheckpointMetadata | None = None,
-    ) -> None:
-        """Upload checkpoint as wandb artifact with run.id-based naming."""
-        if not self.enabled or not self.log_model:
-            return
-
-        assert self.wandb.run is not None, "wandb run must be initialized"
-        artifact_metadata = {
-            "step": step,
-            "run_name": self.wandb.run.name,
-            "run_id": self.wandb.run.id,
-            "run_url": self.wandb.run.url,
-        }
-        if metadata is not None:
-            artifact_metadata.update(
-                {
-                    "timestamp": metadata.timestamp,
-                    "git_hash": metadata.git_hash,
-                    "wandb_run_id": metadata.wandb_run_id,
-                    "wandb_run_name": metadata.wandb_run_name,
-                    "wandb_run_url": metadata.wandb_run_url,
-                }
-            )
-
-        # Add full configs to artifact metadata for config-based loading
-        artifact_metadata["model_config"] = self.model_config.__dict__
-        artifact_metadata["training_config"] = self.training_config.__dict__
-        if self.data_config is not None:
-            from dataclasses import asdict, is_dataclass
-
-            if is_dataclass(self.data_config):
-                artifact_metadata["data_config"] = asdict(self.data_config)
-            else:
-                artifact_metadata["data_config"] = None
-
-        # Use run.id for unique artifact naming
-        artifact = self.wandb.Artifact(
-            name=f"checkpoint-{self.wandb.run.id}-step-{step}",
-            type="model",
-            description=f"Checkpoint at step {step}",
-            metadata=artifact_metadata,
-        )
-        artifact.add_file(str(checkpoint_path))
-        self.wandb.log_artifact(artifact)
-
-    def finish(self) -> None:
-        """Cleanup wandb run."""
-        if not self.enabled:
-            return
-        self.wandb.finish()
+    return loss, metrics
 
 
-def compute_loss(
-    model: BasePFN,
-    x: Float[torch.Tensor, "batch seq input_dim"] | None,
+def compute_unsupervised_loss(
+    model: UnsupervisedPFN,
     y: Float[torch.Tensor, "batch seq"],
     *,
     log_distributional_mse: bool = False,
-) -> Tuple[Float[torch.Tensor, ""], dict[str, float]]:
-    # TODO: refactor! This function is ~200 lines - consider splitting into:
-    #       - compute_supervised_loss() for supervised models
-    #       - compute_unsupervised_loss() for unsupervised models
-    #       This would improve readability and make testing easier
-    """Compute PFN loss and metrics.
-
-    Supports distributional NLL, pointwise MSE, classification CE, or unsupervised CE.
+) -> Tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
+    """Compute loss for unsupervised (next-token/next-value prediction) models.
 
     Args:
-        model: PFN model (supervised or unsupervised).
-        x: Input features for supervised models. Must be None for unsupervised models.
-        y: Target values or observations.
+        model: Unsupervised PFN model.
+        y: Observation sequence.
         log_distributional_mse: Whether to compute MSE for distributional predictions.
 
     Returns:
         Tuple of (loss, metrics_dict).
     """
-    if isinstance(model, UnsupervisedPFN):
-        assert x is None, "x must be None for unsupervised models"
-        logits = model(y)
+    logits = model(y)
+    y = y.to(logits.device)
+
+    if (
+        model.config.input_type == "discrete"
+        and model.config.prediction_type == "distribution"
+    ):
+        # Discrete next-token prediction with cross-entropy
+        logits_flat = logits[:, :-1, :].reshape(-1, model.config.d_vocab)
+        targets_flat = y[:, 1:].long().reshape(-1)
+        loss = nn.functional.cross_entropy(logits_flat, targets_flat, reduction="mean")
+        metrics = {"loss": float(loss.item()), "loss_type": "CE"}
+
+        with torch.no_grad():
+            preds = logits[:, :-1, :].argmax(dim=-1)
+            acc = (preds == y[:, 1:].long()).float().mean()
+        metrics["accuracy"] = float(acc.item())
+
+        return loss, metrics
+
+    elif (
+        model.config.input_type == "continuous"
+        and model.config.prediction_type == "point"
+    ):
+        # Continuous next-value prediction with MSE
+        preds = logits[:, :-1, :].squeeze(-1)
+        targets = y[:, 1:]
+        mse = nn.functional.mse_loss(preds, targets, reduction="mean")
+        metrics = {
+            "loss": float(mse.item()),
+            "mse": float(mse.item()),
+            "loss_type": "MSE",
+        }
+        return mse, metrics
+
+    elif (
+        model.config.input_type == "continuous"
+        and model.config.prediction_type == "distribution"
+    ):
+        # Continuous distribution prediction with NLL
+        logits_shifted = logits[:, :-1, :]
+        targets_shifted = y[:, 1:]
+        return _compute_distributional_nll(
+            logits_shifted, targets_shifted, model.bucketizer, log_distributional_mse
+        )
+
     else:
-        assert x is not None, "x must be provided for supervised models"
-        logits = model(x, y)
+        # Discrete + point prediction (rare but valid)
+        preds = logits[:, :-1, :].squeeze(-1)
+        targets = y[:, 1:].float()
+        mse = nn.functional.mse_loss(preds, targets, reduction="mean")
+        metrics = {
+            "loss": float(mse.item()),
+            "mse": float(mse.item()),
+            "loss_type": "MSE",
+        }
+        return mse, metrics
 
-    metrics: dict[str, float] = {}
 
-    if isinstance(model.config, UnsupervisedPFNConfig):
-        # Ensure y is on the same device as logits (HookedTransformer may move to different device)
-        y = y.to(logits.device)
+def compute_supervised_loss(
+    model: BasePFN,
+    x: Float[torch.Tensor, "batch seq input_dim"],
+    y: Float[torch.Tensor, "batch seq"],
+    *,
+    log_distributional_mse: bool = False,
+) -> Tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
+    """Compute loss for supervised (classification or regression) models.
 
-        if (
-            model.config.input_type == "discrete"
-            and model.config.prediction_type == "distribution"
-        ):
-            # Discrete next-token prediction with cross-entropy
-            logits_flat = logits[:, :-1, :].reshape(-1, model.config.d_vocab)
-            targets_flat = y[:, 1:].long().reshape(-1)
-            loss = nn.functional.cross_entropy(
-                logits_flat, targets_flat, reduction="mean"
-            )
-            metrics["loss"] = float(loss.item())
+    Args:
+        model: Supervised PFN model.
+        x: Input features.
+        y: Target values or class labels.
+        log_distributional_mse: Whether to compute MSE for distributional predictions.
 
-            with torch.no_grad():
-                preds = logits[:, :-1, :].argmax(dim=-1)
-                acc = (preds == y[:, 1:].long()).float().mean()
-            metrics["accuracy"] = float(acc.item())
-
-            return loss, metrics
-
-        elif (
-            model.config.input_type == "continuous"
-            and model.config.prediction_type == "point"
-        ):
-            # Continuous next-value prediction with MSE
-            preds = logits[:, :-1, :].squeeze(-1)
-            targets = y[:, 1:]
-            mse = nn.functional.mse_loss(preds, targets, reduction="mean")
-            metrics["loss"] = float(mse.item())
-            metrics["mse"] = float(mse.item())
-            return mse, metrics
-
-        elif (
-            model.config.input_type == "continuous"
-            and model.config.prediction_type == "distribution"
-        ):
-            # Continuous distribution prediction with NLL
-            logits_shifted = logits[:, :-1, :]
-            targets_shifted = y[:, 1:]
-
-            bucketizer = model.bucketizer
-            log_density_at_targets = bucketizer.log_density_at_values(
-                logits_shifted, targets_shifted
-            )
-            loss = -log_density_at_targets.mean()
-            metrics["loss"] = float(loss.item())
-
-            if log_distributional_mse:
-                with torch.no_grad():
-                    log_densities = bucketizer.log_bucket_densities(logits_shifted)
-                    pred_buckets = log_densities.argmax(dim=-1)
-                    pred_y = model.get_y_values(pred_buckets)
-                    mse = nn.functional.mse_loss(
-                        pred_y, targets_shifted, reduction="mean"
-                    )
-                metrics["mse"] = float(mse.item())
-
-            return loss, metrics
-
-        else:
-            # Discrete + point prediction (rare but valid)
-            preds = logits[:, :-1, :].squeeze(-1)
-            targets = y[:, 1:].float()
-            mse = nn.functional.mse_loss(preds, targets, reduction="mean")
-            metrics["loss"] = float(mse.item())
-            metrics["mse"] = float(mse.item())
-            return mse, metrics
+    Returns:
+        Tuple of (loss, metrics_dict).
+    """
+    logits = model(x, y)
 
     if isinstance(model.config, ClassificationPFNConfig):
+        # Classification with cross-entropy
         logits_flat = logits.view(-1, model.config.num_classes)
         targets_flat = y.long().view(-1)
         loss = nn.functional.cross_entropy(logits_flat, targets_flat, reduction="mean")
-        metrics["loss"] = float(loss.item())
+        metrics = {"loss": float(loss.item()), "loss_type": "CE"}
 
         with torch.no_grad():
             preds = logits.argmax(dim=-1)
@@ -373,33 +259,52 @@ def compute_loss(
         isinstance(model.config, SupervisedRegressionPFNConfig)
         and model.config.prediction_type == "point"
     ):
+        # Point regression with MSE
         preds = logits.squeeze(-1)
         mse = nn.functional.mse_loss(preds, y, reduction="mean")
-        metrics["loss"] = float(mse.item())
-        metrics["mse"] = float(mse.item())
+        metrics = {
+            "loss": float(mse.item()),
+            "mse": float(mse.item()),
+            "loss_type": "MSE",
+        }
         return mse, metrics
 
-    bucketizer = model.bucketizer
-    log_density_at_targets = bucketizer.log_density_at_values(logits, y)
-    loss = -log_density_at_targets.mean()
-    metrics["loss"] = float(loss.item())
-
-    if log_distributional_mse:
-        with torch.no_grad():
-            log_densities = bucketizer.log_bucket_densities(logits)
-            pred_buckets = log_densities.argmax(dim=-1)
-            pred_y = model.get_y_values(pred_buckets)
-            mse = nn.functional.mse_loss(pred_y, y, reduction="mean")
-        metrics["mse"] = float(mse.item())
-
-    return loss, metrics
+    # Distributional regression with NLL
+    return _compute_distributional_nll(
+        logits, y, model.bucketizer, log_distributional_mse
+    )
 
 
-# TODO: is this really the best way to do this, feels redundant tbh.
-def lr_with_warmup(step: int, warmup_steps: int, base_lr: float) -> float:
-    if step < warmup_steps:
-        return base_lr * (step + 1) / warmup_steps
-    return base_lr
+def compute_loss(
+    model: BasePFN,
+    x: Float[torch.Tensor, "batch seq input_dim"] | None,
+    y: Float[torch.Tensor, "batch seq"],
+    *,
+    log_distributional_mse: bool = False,
+) -> Tuple[Float[torch.Tensor, ""], dict[str, float | str]]:
+    """Compute PFN loss and metrics.
+
+    Delegates to specialized functions for supervised vs unsupervised models.
+
+    Args:
+        model: PFN model (supervised or unsupervised).
+        x: Input features for supervised models. Must be None for unsupervised models.
+        y: Target values or observations.
+        log_distributional_mse: Whether to compute MSE for distributional predictions.
+
+    Returns:
+        Tuple of (loss, metrics_dict).
+    """
+    if isinstance(model, UnsupervisedPFN):
+        assert x is None, "x must be None for unsupervised models"
+        return compute_unsupervised_loss(
+            model, y, log_distributional_mse=log_distributional_mse
+        )
+    else:
+        assert x is not None, "x must be provided for supervised models"
+        return compute_supervised_loss(
+            model, x, y, log_distributional_mse=log_distributional_mse
+        )
 
 
 def evaluate_model(
@@ -410,7 +315,7 @@ def evaluate_model(
     batch_size: int,
     device: str,
     log_distributional_mse: bool = False,
-) -> dict[str, float]:
+) -> dict[str, float | str]:
     """Evaluate model on validation data.
 
     Args:
@@ -426,7 +331,7 @@ def evaluate_model(
         Dictionary of averaged evaluation metrics.
     """
     model.eval()
-    total_metrics: dict[str, float] = {}
+    total_metrics: dict[str, float | str] = {}
 
     with torch.no_grad():
         for _ in range(eval_batches):
@@ -440,10 +345,20 @@ def evaluate_model(
             )
 
             for key, value in metrics.items():
-                total_metrics[key] = total_metrics.get(key, 0.0) + value
+                if isinstance(value, str):
+                    # non-numeric values (like loss_type) - just store directly
+                    total_metrics[key] = value
+                elif isinstance(value, (int, float)):
+                    # numeric values - accumulate for averaging
+                    existing = total_metrics.get(key, 0.0)
+                    if isinstance(existing, (int, float)):
+                        total_metrics[key] = existing + value
 
-    # Average metrics
-    avg_metrics = {key: value / eval_batches for key, value in total_metrics.items()}
+    # Average metrics (skip non-numeric values)
+    avg_metrics = {
+        key: value / eval_batches if isinstance(value, (int, float)) else value
+        for key, value in total_metrics.items()
+    }
 
     model.train()
     return avg_metrics
@@ -477,10 +392,6 @@ def train(
     """
     device = training_config.get_device()
 
-    # IO setup
-    ckpt_dir = Path(training_config.checkpoint_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-
     # wandb logging
     logger = WandbLogger(training_config, model_config, data_config)
 
@@ -499,11 +410,25 @@ def train(
         weight_decay=training_config.weight_decay,
     )
 
+    # LR scheduler with warmup
+    if training_config.use_warmup:
+
+        def warmup_lambda(step: int) -> float:
+            if step < training_config.warmup_steps:
+                return (step + 1) / training_config.warmup_steps
+            return 1.0
+
+        scheduler = LambdaLR(optimizer, lr_lambda=warmup_lambda)
+    else:
+        scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+
     start_step = 0
     if resume_from is not None:
         state = torch.load(resume_from, map_location=device, weights_only=False)
         model.load_state_dict(state["model_state_dict"])
         optimizer.load_state_dict(state["optimizer_state_dict"])
+        if "scheduler_state_dict" in state:
+            scheduler.load_state_dict(state["scheduler_state_dict"])
         start_step = int(state.get("step", 0))
 
     model.train()
@@ -573,16 +498,6 @@ def train(
             x = x.to(device)
         y = y.to(device)
 
-        # LR schedule
-        if training_config.use_warmup:
-            lr = lr_with_warmup(
-                step, training_config.warmup_steps, training_config.learning_rate
-            )
-            for g in optimizer.param_groups:
-                g["lr"] = lr
-        else:
-            lr = training_config.learning_rate
-
         # Forward + backward
         loss, metrics = compute_loss(
             model,
@@ -592,7 +507,9 @@ def train(
         )
 
         # log loss every step
-        logger.log({"loss": metrics["loss"]}, step)
+        loss_value = metrics["loss"]
+        assert isinstance(loss_value, (int, float))
+        logger.log({"loss": loss_value}, step)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -601,22 +518,27 @@ def train(
                 model.parameters(), training_config.grad_clip
             )
         optimizer.step()
+        scheduler.step()
+
+        # Get current LR for logging
+        lr = optimizer.param_groups[0]["lr"]
 
         # Metrics window
-        run_loss += metrics["loss"]
+        run_loss += loss_value
         mse_value = metrics.get("mse")
-        if mse_value is not None:
+        if mse_value is not None and isinstance(mse_value, (int, float)):
             run_mse += mse_value
             mse_count += 1
         acc_value = metrics.get("accuracy")
-        if acc_value is not None:
+        if acc_value is not None and isinstance(acc_value, (int, float)):
             run_acc += acc_value
             acc_count += 1
 
         if (step + 1) % training_config.log_every == 0:
             avg_loss = run_loss / training_config.log_every
+            loss_type = metrics.get("loss_type", "loss")
             postfix = {
-                "loss": f"{avg_loss:.4f}",  # TODO: specify loss function
+                "loss": f"{loss_type} {avg_loss:.4f}",
                 "lr": f"{lr:.6f}",
             }
 
@@ -651,6 +573,8 @@ def train(
         ):
             from datetime import datetime
 
+            ckpt_dir = Path(training_config.checkpoint_dir)
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
             ckpt_path = ckpt_dir / f"checkpoint_step_{step + 1}.pt"
 
             # Create metadata
@@ -668,6 +592,7 @@ def train(
                 step=step + 1,
                 model_state=model.state_dict(),
                 optimizer_state=optimizer.state_dict(),
+                scheduler_state=scheduler.state_dict(),
                 model_config=model_config,
                 training_config=training_config,
                 metadata=metadata,
@@ -713,9 +638,7 @@ def train(
 
 __all__ = [
     "TrainingConfig",
-    "WandbLogger",
     "compute_loss",
-    "lr_with_warmup",
     "evaluate_model",
     "train",
 ]

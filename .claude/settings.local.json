@@ -3,9 +3,11 @@
     "allow": [
       "Bash(ruff check:*)",
       "Bash(ruff format:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(uv run pytest:*)"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "outputStyle": "default"
 }

@@ -5,7 +5,9 @@
       "Bash(ruff format:*)",
       "Bash(tree:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uvx ty check:*)"
+      "Bash(uvx ty check:*)",
+      "Bash(uv run python:*)",
+      "Bash(timeout 60 uv run python:*)"
     ],
     "deny": [],
     "ask": []

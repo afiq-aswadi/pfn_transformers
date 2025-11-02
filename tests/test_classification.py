@@ -526,3 +526,125 @@ class TestClassificationPrediction:
         )
 
         assert entropy_low < entropy_high
+
+
+class TestCategoricalYType:
+    """Test categorical y_type functionality."""
+
+    def test_categorical_creates_embedding(self) -> None:
+        """Test that categorical y_type creates embedding layer."""
+        config = make_classification_config(y_type="categorical", num_classes=5)
+        model = PFNModel(config)
+
+        assert hasattr(model, "y_embed")
+        assert isinstance(model.y_embed, torch.nn.Embedding)
+        assert model.y_embed.num_embeddings == 5
+
+    def test_continuous_creates_linear(self) -> None:
+        """Test that continuous y_type creates linear layer."""
+        config = make_classification_config(y_type="continuous")
+        model = PFNModel(config)
+
+        assert hasattr(model, "input_proj")
+        assert isinstance(model.input_proj, torch.nn.Linear)
+
+    def test_categorical_forward_autoregressive(self) -> None:
+        """Test categorical y_type with autoregressive-pfn mask."""
+        config = make_classification_config(
+            y_type="categorical", num_classes=3, mask_type="autoregressive-pfn"
+        )
+        model = PFNModel(config)
+        device = next(model.parameters()).device
+
+        batch_size, seq_len = 4, 10
+        x = torch.randn(batch_size, seq_len, config.input_dim, device=device)
+        y = torch.randint(0, 3, (batch_size, seq_len), device=device)
+
+        output = model(x, y.float())
+        assert output.shape == (batch_size, seq_len, 3)
+
+    def test_categorical_forward_gpt2(self) -> None:
+        """Test categorical y_type with gpt2 mask."""
+        config = make_classification_config(
+            y_type="categorical", num_classes=4, mask_type="gpt2"
+        )
+        model = PFNModel(config)
+        device = next(model.parameters()).device
+
+        batch_size, seq_len = 4, 10
+        x = torch.randn(batch_size, seq_len, config.input_dim, device=device)
+        y = torch.randint(0, 4, (batch_size, seq_len), device=device)
+
+        output = model(x, y.float())
+        assert output.shape == (batch_size, seq_len, 4)
+
+    def test_categorical_training(self) -> None:
+        """Test that training works with categorical y_type."""
+        config = make_classification_config(
+            y_type="categorical", num_classes=2, n_ctx=32
+        )
+        model = PFNModel(config)
+        device = next(model.parameters()).device
+
+        batch_size, seq_len = 4, 16
+        x = torch.randn(batch_size, seq_len, config.input_dim, device=device)
+        y = torch.randint(0, 2, (batch_size, seq_len), device=device)
+
+        initial_loss, _ = compute_loss(model, x, y.float())
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        for _ in range(10):
+            optimizer.zero_grad()
+            loss, _ = compute_loss(model, x, y.float())
+            loss.backward()
+            optimizer.step()
+
+        final_loss, _ = compute_loss(model, x, y.float())
+        assert final_loss < initial_loss
+
+    def test_categorical_predict(self) -> None:
+        """Test predict_on_prompt works with categorical y_type."""
+        config = make_classification_config(y_type="categorical", num_classes=3)
+        model = PFNModel(config)
+
+        seq_len = 10
+        x = torch.randn(seq_len, config.input_dim)
+        y = torch.randint(0, 3, (seq_len,))
+
+        preds = model.predict_on_prompt(x, y)
+        assert preds.probs.shape == (seq_len, 3)
+
+    def test_categorical_gradient_flow(self) -> None:
+        """Test gradients flow through categorical embeddings."""
+        config = make_classification_config(y_type="categorical", num_classes=2)
+        model = PFNModel(config)
+        device = next(model.parameters()).device
+
+        batch_size, seq_len = 2, 8
+        x = torch.randn(batch_size, seq_len, config.input_dim, device=device)
+        y = torch.randint(0, 2, (batch_size, seq_len), device=device)
+
+        loss, _ = compute_loss(model, x, y.float())
+        loss.backward()
+
+        assert model.x_proj.weight.grad is not None
+        assert (model.x_proj.weight.grad != 0).any()
+        assert model.y_embed.weight.grad is not None
+        assert (model.y_embed.weight.grad != 0).any()
+
+    def test_categorical_multiclass(self) -> None:
+        """Test categorical y_type with many classes."""
+        config = make_classification_config(y_type="categorical", num_classes=10)
+        model = PFNModel(config)
+        device = next(model.parameters()).device
+
+        batch_size, seq_len = 4, 10
+        x = torch.randn(batch_size, seq_len, config.input_dim, device=device)
+        y = torch.randint(0, 10, (batch_size, seq_len), device=device)
+
+        output = model(x, y.float())
+        assert output.shape == (batch_size, seq_len, 10)
+
+        preds = model.predict_on_prompt(x[0], y[0])
+        assert preds.probs.shape == (seq_len, 10)
+        assert torch.allclose(preds.probs.sum(dim=-1), torch.ones(seq_len))

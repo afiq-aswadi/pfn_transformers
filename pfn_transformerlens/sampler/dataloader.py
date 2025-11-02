@@ -55,7 +55,9 @@ def sample_batch(
     data_generator: DataGenerator,
     batch_size: int,
     seq_len: int,
-) -> tuple[Float[torch.Tensor, "batch seq input_dim"] | None, Float[torch.Tensor, "batch seq"]]:
+) -> tuple[
+    Float[torch.Tensor, "batch seq input_dim"] | None, Float[torch.Tensor, "batch seq"]
+]:
     """Sample a batch of sequences from a data generator.
 
     Args:

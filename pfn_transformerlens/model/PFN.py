@@ -65,7 +65,12 @@ class BasePFN(nn.Module, ABC):
         self.transformer = HookedTransformer(config)
 
         # move input_proj to same device as transformer at initialization
-        self.input_proj = self.input_proj.to(self.transformer.cfg.device)
+        if hasattr(self, "input_proj"):
+            self.input_proj = self.input_proj.to(self.transformer.cfg.device)
+        if hasattr(self, "x_proj"):
+            self.x_proj = self.x_proj.to(self.transformer.cfg.device)
+        if hasattr(self, "y_embed"):
+            self.y_embed = self.y_embed.to(self.transformer.cfg.device)
 
         if not config.use_pos_emb:
             self.transformer.W_pos.requires_grad = False
@@ -473,13 +478,24 @@ class SupervisedPFN(BasePFN):
 
     config: SupervisedRegressionPFNConfig | ClassificationPFNConfig
     input_proj: nn.Linear
+    x_proj: nn.Linear
+    y_embed: nn.Embedding
 
     def __init__(self, config: SupervisedRegressionPFNConfig | ClassificationPFNConfig):
         super().__init__(config)
 
     def _setup_input_proj(self) -> None:
-        """Setup linear input projection for concatenated x/y tokens."""
-        self.input_proj = nn.Linear(self.config.input_dim + 1, self.config.d_model)
+        """Setup input projection for x/y tokens."""
+        if (
+            isinstance(self.config, ClassificationPFNConfig)
+            and self.config.y_type == "categorical"
+        ):
+            # separate embeddings for continuous x and categorical y
+            self.x_proj = nn.Linear(self.config.input_dim, self.config.d_model)
+            self.y_embed = nn.Embedding(self.config.num_classes, self.config.d_model)
+        else:
+            # continuous y: use concatenated projection
+            self.input_proj = nn.Linear(self.config.input_dim + 1, self.config.d_model)
 
     def forward(
         self,
@@ -794,21 +810,37 @@ class SupervisedPFN(BasePFN):
             interleaved sequence order; you'll need to flatten/slice manually when post-processing.
         """
         batch_size, seq_len, input_dim = x.shape
-
-        # Interleave x and y into single input
         device = x.device
-        xy_combined = torch.zeros(
-            batch_size,
-            2 * seq_len,
-            input_dim + 1,
-            device=device,
-            dtype=x.dtype,
-        )
-        xy_combined[:, :, :input_dim] = x.repeat_interleave(2, dim=1)
-        xy_combined[:, 1::2, -1] = y
 
-        # Project to d_model dimension
-        hidden = self.input_proj(xy_combined)
+        # Prepare input embeddings based on y type
+        if (
+            isinstance(self.config, ClassificationPFNConfig)
+            and self.config.y_type == "categorical"
+        ):
+            # project x and embed y separately to avoid leaking labels into x tokens
+            x_proj = self.x_proj(x)  # (batch, seq, d_model)
+            y_embed = self.y_embed(y.long())  # (batch, seq, d_model)
+            hidden = torch.zeros(
+                batch_size,
+                2 * seq_len,
+                self.config.d_model,
+                device=device,
+                dtype=x_proj.dtype,
+            )
+            hidden[:, ::2, :] = x_proj
+            hidden[:, 1::2, :] = x_proj + y_embed
+        else:
+            # continuous y: concatenate x and y, then project
+            xy_combined = torch.zeros(
+                batch_size,
+                2 * seq_len,
+                input_dim + 1,
+                device=device,
+                dtype=x.dtype,
+            )
+            xy_combined[:, :, :input_dim] = x.repeat_interleave(2, dim=1)
+            xy_combined[:, 1::2, -1] = y
+            hidden = self.input_proj(xy_combined)
         residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)
 
         # Create mask hook
@@ -854,19 +886,38 @@ class SupervisedPFN(BasePFN):
         """Standard GPT-style causal pass without a custom attention hook."""
 
         batch_size, seq_len, input_dim = x.shape
-
         device = x.device
-        xy_combined = torch.zeros(
-            batch_size,
-            2 * seq_len,
-            input_dim + 1,
-            device=device,
-            dtype=x.dtype,
-        )
-        xy_combined[:, ::2, :input_dim] = x
-        xy_combined[:, 1::2, -1] = y
 
-        hidden = self.input_proj(xy_combined)
+        # Prepare input embeddings based on y type
+        if (
+            isinstance(self.config, ClassificationPFNConfig)
+            and self.config.y_type == "categorical"
+        ):
+            # project x and embed y separately, then interleave as separate tokens
+            x_proj = self.x_proj(x)  # (batch, seq, d_model)
+            y_embed = self.y_embed(y.long())  # (batch, seq, d_model)
+
+            hidden = torch.zeros(
+                batch_size,
+                2 * seq_len,
+                self.config.d_model,
+                device=device,
+                dtype=x_proj.dtype,
+            )
+            hidden[:, ::2, :] = x_proj  # x at even positions
+            hidden[:, 1::2, :] = x_proj + y_embed  # x plus y at odd positions
+        else:
+            # continuous y: concatenate x and y, then project
+            xy_combined = torch.zeros(
+                batch_size,
+                2 * seq_len,
+                input_dim + 1,
+                device=device,
+                dtype=x.dtype,
+            )
+            xy_combined[:, :, :input_dim] = x
+            xy_combined[:, 1::2, -1] = y
+            hidden = self.input_proj(xy_combined)
         residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)
 
         if return_cache:

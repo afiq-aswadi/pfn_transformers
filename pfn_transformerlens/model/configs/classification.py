@@ -16,10 +16,12 @@ class ClassificationPFNConfig(BasePFNConfig):
 
     Attributes:
         num_classes: Number of classification classes.
+        y_type: Type of y values ("continuous" or "categorical").
         mask_type: Attention mask type ("autoregressive-pfn" or "gpt2").
     """
 
     num_classes: int = 2
+    y_type: Literal["continuous", "categorical"] = "continuous"
     mask_type: Literal["autoregressive-pfn", "gpt2"] = "autoregressive-pfn"
 
     def __post_init__(self) -> None:

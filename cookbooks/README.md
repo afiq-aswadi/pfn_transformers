@@ -79,6 +79,21 @@ Demonstrates advanced features for experiment tracking and model introspection:
 
 **Key concepts**: save_model, load_model_by_config, return_cache=True, TransformerLens hooks
 
+---
+
+### 06_supervised_binary_classification.py
+**Supervised Learning: Binary Classification**
+
+Trains a PFN to perform binary classification on 2D points:
+- Class 0: points inside a circle
+- Class 1: points outside the circle
+
+- Demonstrates in-context learning of non-linear decision boundaries
+- Shows decision boundary visualization with confidence regions
+- Includes calibration analysis and prediction accuracy plots
+
+**Key concepts**: ClassificationPFNConfig, DeterministicGenerator with discrete outputs, non-linear decision boundaries
+
 ## Common Patterns
 
 ### Training Configuration

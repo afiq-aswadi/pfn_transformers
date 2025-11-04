@@ -29,6 +29,7 @@ from tqdm import tqdm
 from pfn_transformerlens.checkpointing import (
     CheckpointMetadata,
     _get_git_hash,
+    get_logarithmic_checkpoint_steps,
     save_checkpoint,
 )
 from pfn_transformerlens.model.configs import (
@@ -62,7 +63,12 @@ class TrainingConfig:
         log_distributional_mse: Whether to compute an approximate MSE metric when
             training density models (adds an argmax over buckets each step).
         save_checkpoint: Whether to save checkpoints during training.
-        save_every: Steps between checkpoints.
+        checkpoint_schedule: Checkpoint scheduling strategy. Options:
+            - "linear": Save every save_every steps (default, backwards compatible)
+            - "logarithmic": Combined linear + log spacing per https://arxiv.org/pdf/2501.17745
+        save_every: Steps between checkpoints (only used for "linear" schedule).
+        linear_checkpoint_interval: Interval for linear checkpoints in logarithmic schedule.
+        n_log_checkpoints: Number of logarithmically spaced checkpoints (N parameter).
         checkpoint_dir: Directory to save checkpoints.
         eval_every: Steps between evaluations (None = no evaluation).
         eval_batches: Number of batches to average for eval metrics.
@@ -89,7 +95,10 @@ class TrainingConfig:
     log_every: int = 100
     log_distributional_mse: bool = False
     save_checkpoint: bool = True
+    checkpoint_schedule: str = "linear"
     save_every: int = 1000
+    linear_checkpoint_interval: int = 100
+    n_log_checkpoints: int = 1000
     checkpoint_dir: str = "checkpoints"
     eval_every: int | None = None
     eval_batches: int = 10
@@ -445,6 +454,23 @@ def train(
     mse_count = 0
     acc_count = 0
 
+    # precompute checkpoint steps based on schedule
+    if training_config.checkpoint_schedule == "logarithmic":
+        checkpoint_steps_list = get_logarithmic_checkpoint_steps(
+            training_steps=training_config.num_steps,
+            n_log_checkpoints=training_config.n_log_checkpoints,
+            linear_interval=training_config.linear_checkpoint_interval,
+        )
+        checkpoint_steps_set = set(checkpoint_steps_list)
+        pbar.write(
+            f"Using logarithmic checkpoint schedule: {len(checkpoint_steps_list)} checkpoints planned"
+        )
+    else:
+        checkpoint_steps_set = None
+        pbar.write(
+            f"Using linear checkpoint schedule: saving every {training_config.save_every} steps"
+        )
+
     for step in pbar:
         x, y = next(data_iter)
 
@@ -573,10 +599,15 @@ def train(
             mse_count = 0
             acc_count = 0
 
-        if (
-            training_config.save_checkpoint
-            and (step + 1) % training_config.save_every == 0
-        ):
+        # determine if we should save checkpoint at this step
+        should_save_checkpoint = False
+        if training_config.save_checkpoint:
+            if training_config.checkpoint_schedule == "logarithmic":
+                should_save_checkpoint = (step + 1) in checkpoint_steps_set
+            else:
+                should_save_checkpoint = (step + 1) % training_config.save_every == 0
+
+        if should_save_checkpoint:
             from datetime import datetime
 
             ckpt_dir = checkpoint_root

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import torch
+import numpy as np
 
 from pfn_transformerlens.model.PFN import BasePFN, PFNModel
 from pfn_transformerlens.model.configs.base import BasePFNConfig
@@ -52,6 +53,79 @@ def _get_device(device_hint: str) -> str:
             return "mps"
         return "cpu"
     return device_hint
+
+
+def get_logarithmic_checkpoint_steps(
+    training_steps: int, n_log_checkpoints: int = 1000, linear_interval: int = 100
+) -> list[int]:
+    """
+    Build checkpoint indices using combined linear and logarithmic spacing.
+
+    Implements the checkpointing scheme from Appendix A.4 of:
+    "Dynamics of Transient Structure in In-Context Linear Regression Transformers"
+    https://arxiv.org/pdf/2501.17745
+
+    The checkpoint set C = C_linear U C_log where:
+    - C_linear = {0, linear_interval, 2*linear_interval, ..., T}
+    - C_log = {floor(T^(j/(N-1))) : j = 0, 1, ..., N-1}
+
+    This combines:
+    1. Evenly spaced checkpoints to capture regular progress
+    2. Logarithmically spaced checkpoints for early-stage rapid changes
+
+    Args:
+        training_steps: Total number of training steps (T)
+        n_log_checkpoints: Number of logarithmically spaced checkpoints (N)
+        linear_interval: Interval for linear checkpoints (e.g., 100 means every 100 steps)
+
+    Returns:
+        Sorted list of unique checkpoint step indices in [0, training_steps].
+
+    Example:
+        >>> steps = get_logarithmic_checkpoint_steps(150000, n_log_checkpoints=1000, linear_interval=100)
+        >>> len(steps)  # approximately 2203 for these settings
+        2203
+        >>> steps[:5]  # early checkpoints are dense
+        [0, 1, 2, 3, 4]
+        >>> steps[-5:]  # later checkpoints follow linear spacing
+        [149700, 149800, 149900, 149999, 150000]
+    """
+    if training_steps < 0:
+        raise ValueError("training_steps must be non-negative")
+    if n_log_checkpoints < 1:
+        raise ValueError("n_log_checkpoints must be at least 1")
+    if linear_interval <= 0:
+        raise ValueError("linear_interval must be positive")
+
+    T = int(training_steps)
+    N = int(n_log_checkpoints)
+    interval = int(linear_interval)
+
+    if T == 0:
+        return [0]
+
+    # C_linear: evenly spaced checkpoints at specified interval, including T.
+    linear_steps = np.arange(0, T + 1, interval, dtype=int)
+    if linear_steps[-1] != T:
+        linear_steps = np.append(linear_steps, T)
+    linear_set = set(linear_steps.tolist())
+
+    # C_log: logarithmically spaced checkpoints
+    if T == 1:
+        log_array = np.ones(N, dtype=int)
+    elif N == 1:
+        log_array = np.array([T], dtype=int)
+    else:
+        exponents = np.linspace(0, 1, N)
+        log_array = np.floor(np.power(T, exponents)).astype(int)
+
+    # ensure all log steps are in valid range [0, T]
+    log_array = np.clip(log_array, 0, T)
+    log_set = set(log_array.tolist())
+
+    # union of both sets
+    checkpoint_set = linear_set.union(log_set)
+    return sorted(checkpoint_set)
 
 
 def save_checkpoint(

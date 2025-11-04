@@ -395,6 +395,12 @@ def train(
     # wandb logging
     logger = WandbLogger(training_config, model_config, data_config)
 
+    # derive checkpoint directory (make run-scoped when wandb logging enabled)
+    checkpoint_root = Path(training_config.checkpoint_dir)
+    if logger.enabled and logger.run_id:
+        checkpoint_root = checkpoint_root / logger.run_id
+    training_config.checkpoint_dir = str(checkpoint_root)
+
     # Model + data
     model = PFNModel(model_config)
     model = model.to(device)
@@ -573,7 +579,7 @@ def train(
         ):
             from datetime import datetime
 
-            ckpt_dir = Path(training_config.checkpoint_dir)
+            ckpt_dir = checkpoint_root
             ckpt_dir.mkdir(parents=True, exist_ok=True)
             ckpt_path = ckpt_dir / f"checkpoint_step_{step + 1}.pt"
 

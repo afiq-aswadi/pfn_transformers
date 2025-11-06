@@ -191,9 +191,300 @@ class Bucketizer(nn.Module):
 
         Returns:
             Representative values for each bucket.
+
+        Notes:
+            Returns bucket midpoints suitable for mode estimation or expectation.
+            For sampling from the full distribution, use `sample()` which draws
+            uniformly within buckets (and from half-normal tails in unbounded mode).
         """
         mids = self.borders[:-1] + 0.5 * self.bucket_widths
         return mids
+
+    @torch.no_grad()
+    def sample(
+        self,
+        logits: Float[Tensor, "... num_buckets"],
+        temperature: float = 1.0,
+        generator: Optional[torch.Generator] = None,
+    ) -> Float[Tensor, "..."]:
+        """Sample continuous values from piecewise-uniform distribution.
+
+        Uses inverse CDF with linear interpolation within buckets. For unbounded
+        support, samples from half-normal tails when probability mass falls in
+        tail regions, matching the density used in training loss.
+
+        Parameters:
+            logits: Logits over buckets. Supports arbitrary batch dimensions.
+            temperature: Sampling temperature applied before softmax.
+            generator: Optional RNG generator for deterministic sampling.
+
+        Returns:
+            Continuous values sampled from the distribution.
+            Returns values on same device/dtype as logits.
+
+        Notes:
+            - For bounded support: samples uniformly within bucket boundaries
+            - For unbounded support: edge buckets have 50% interior, 50% tail mass
+            - Numerically stable at extreme temperatures via epsilon flooring
+        """
+        if temperature <= 0:
+            raise ValueError("temperature must be > 0")
+
+        device = logits.device
+        orig_dtype = logits.dtype
+        batch_shape = logits.shape[:-1]
+
+        # use higher-precision math for low-precision logits to avoid CPU restrictions
+        calc_dtype = (
+            torch.float32
+            if orig_dtype in (torch.float16, torch.bfloat16)
+            else orig_dtype
+        )
+        logits_calc = logits.to(calc_dtype)
+
+        # apply temperature and softmax
+        probs = torch.softmax(logits_calc / float(temperature), dim=-1)
+
+        # sample uniform p ~ U(0,1) for inverse CDF in calculation dtype, then cast back
+        p_cdf = torch.rand(
+            batch_shape,
+            device=device,
+            dtype=calc_dtype,
+            generator=generator,
+        )
+
+        if self.bucket_support == "unbounded":
+            samples = self._sample_unbounded(probs, p_cdf, calc_dtype)
+        else:
+            samples = self._sample_bounded(probs, p_cdf, calc_dtype)
+
+        return samples.to(orig_dtype)
+
+    def _sample_bounded(
+        self,
+        probs: Float[Tensor, "... num_buckets"],
+        p_cdf: Float[Tensor, "..."],
+        calc_dtype: torch.dtype,
+    ) -> Float[Tensor, "..."]:
+        """Sample from bounded piecewise-uniform distribution."""
+        # standard inverse CDF: find bucket via cumulative probabilities
+        cumprobs = torch.cumsum(probs, dim=-1)
+
+        # find which bucket each p falls into
+        bucket_idx = torch.searchsorted(
+            cumprobs.contiguous(),
+            p_cdf.unsqueeze(-1).contiguous(),
+        ).squeeze(-1)
+        bucket_idx = bucket_idx.clamp(max=self.num_buckets - 1)
+
+        # get remaining probability within the bucket
+        cumprobs_before = torch.cat(
+            [torch.zeros_like(cumprobs[..., :1]), cumprobs[..., :-1]],
+            dim=-1,
+        )
+        rest_prob = p_cdf - cumprobs_before.gather(
+            -1, bucket_idx.unsqueeze(-1)
+        ).squeeze(-1)
+
+        # get bucket boundaries and probabilities
+        borders = self.borders.to(device=probs.device, dtype=calc_dtype)
+        left_border = borders[bucket_idx]
+        right_border = borders[bucket_idx + 1]
+        bucket_probs = probs.gather(-1, bucket_idx.unsqueeze(-1)).squeeze(-1)
+
+        # numerical guard: avoid division by near-zero probabilities
+        bucket_probs = bucket_probs.clamp_min(1e-12)
+
+        # linear interpolation within bucket, clamped to [0, 1] in same dtype
+        interp_factor = (rest_prob / bucket_probs).clamp(0.0, 1.0).to(probs.dtype)
+        samples = left_border + (right_border - left_border) * interp_factor
+
+        # sanity check
+        assert torch.all(torch.isfinite(samples)), "Samples must be finite"
+
+        return samples
+
+    def _sample_unbounded(
+        self,
+        probs: Float[Tensor, "... num_buckets"],
+        p_cdf: Float[Tensor, "..."],
+        calc_dtype: torch.dtype,
+    ) -> Float[Tensor, "..."]:
+        """Sample from unbounded distribution with half-normal tails.
+
+        Edge buckets have 50% interior mass and 50% tail mass.
+        """
+        device = probs.device
+        borders = self.borders.to(device=device, dtype=calc_dtype)
+
+        # build modified cumulative distribution for interior regions
+        # bucket 0: contributes 0.5 * probs[0] to interior
+        # buckets 1..n-2: contribute full probability
+        # bucket n-1: contributes 0.5 * probs[n-1] to interior
+        interior_probs = probs.clone()
+        interior_probs[..., 0] *= 0.5
+        interior_probs[..., -1] *= 0.5
+        cumprobs_interior = torch.cumsum(interior_probs, dim=-1)
+
+        # determine which region each sample falls into
+        left_tail_mass = 0.5 * probs[..., 0]
+        left_tail_mask = p_cdf < left_tail_mass
+        # right tail starts after left tail + all interior mass
+        right_tail_mask = p_cdf >= (left_tail_mass + cumprobs_interior[..., -1])
+        interior_mask = ~(left_tail_mask | right_tail_mask)
+
+        # handle scalar case (0D tensor)
+        is_scalar = p_cdf.dim() == 0
+
+        if is_scalar:
+            # scalar case: determine which region and compute directly
+            if left_tail_mask.item():
+                p_in_tail = p_cdf / (0.5 * probs[0])
+                scale = self._halfnormal_scale(self.bucket_widths[0]).to(
+                    device=device, dtype=calc_dtype
+                )
+                # inverse CDF of half-normal: scale * sqrt(2) * erfinv(p)
+                # clamp to avoid erfinv asymptotes at ±1
+                distance = (
+                    scale
+                    * (2.0**0.5)
+                    * torch.erfinv(
+                        p_in_tail.clamp(min=1e-7, max=0.9999999).to(calc_dtype)
+                    )
+                )
+                return borders[0] - distance
+            elif right_tail_mask.item():
+                # renormalize p within right tail region
+                right_tail_start = left_tail_mass + cumprobs_interior[-1]
+                p_in_tail = (p_cdf - right_tail_start) / (0.5 * probs[-1])
+                scale = self._halfnormal_scale(self.bucket_widths[-1]).to(
+                    device=device, dtype=calc_dtype
+                )
+                distance = (
+                    scale
+                    * (2.0**0.5)
+                    * torch.erfinv(
+                        p_in_tail.clamp(min=1e-7, max=0.9999999).to(calc_dtype)
+                    )
+                )
+                return borders[-1] + distance
+            else:
+                # interior
+                p_interior = (p_cdf - left_tail_mass) / cumprobs_interior[-1]
+                cumprobs_norm = cumprobs_interior / cumprobs_interior[-1]
+                bucket_idx = torch.searchsorted(
+                    cumprobs_norm.contiguous(), p_interior.unsqueeze(0).contiguous()
+                ).squeeze(0)
+                bucket_idx = bucket_idx.clamp(max=self.num_buckets - 1)
+
+                cumprobs_before = torch.cat(
+                    [torch.zeros(1, device=device, dtype=calc_dtype), cumprobs_norm[:-1]]
+                )
+                rest_prob = p_interior - cumprobs_before[bucket_idx]
+
+                left_border = borders[bucket_idx]
+                right_border = borders[bucket_idx + 1]
+                bucket_prob_interior = (
+                    interior_probs[bucket_idx] / cumprobs_interior[-1]
+                )
+                bucket_prob_interior = bucket_prob_interior.clamp_min(1e-12)
+
+                interp_factor = (
+                    (rest_prob / bucket_prob_interior)
+                    .clamp(0.0, 1.0)
+                    .to(calc_dtype)
+                )
+                return left_border + (right_border - left_border) * interp_factor
+
+        # multi-dimensional case
+        samples = torch.empty_like(p_cdf, dtype=calc_dtype)
+
+        # left tail: sample from half-normal below borders[0]
+        if left_tail_mask.any():
+            # renormalize p within left tail region
+            p_in_tail = p_cdf[left_tail_mask] / (0.5 * probs[..., 0][left_tail_mask])
+            scale = self._halfnormal_scale(self.bucket_widths[0]).to(
+                device=device,
+                dtype=calc_dtype,
+            )
+            # inverse CDF of half-normal: scale * sqrt(2) * erfinv(p)
+            # clamp to avoid erfinv asymptotes at ±1
+            distances = (
+                scale
+                * (2.0**0.5)
+                * torch.erfinv(p_in_tail.clamp(min=1e-7, max=0.9999999).to(calc_dtype))
+            )
+            samples[left_tail_mask] = borders[0] - distances
+
+        # right tail: sample from half-normal above borders[-1]
+        if right_tail_mask.any():
+            # renormalize p within right tail region
+            right_tail_start = left_tail_mass + cumprobs_interior[..., -1]
+            p_in_tail = (p_cdf[right_tail_mask] - right_tail_start[right_tail_mask]) / (
+                0.5 * probs[..., -1][right_tail_mask]
+            )
+            scale = self._halfnormal_scale(self.bucket_widths[-1]).to(
+                device=device,
+                dtype=calc_dtype,
+            )
+            distances = (
+                scale
+                * (2.0**0.5)
+                * torch.erfinv(p_in_tail.clamp(min=1e-7, max=0.9999999).to(calc_dtype))
+            )
+            samples[right_tail_mask] = borders[-1] + distances
+
+        # interior: standard inverse CDF on interior distribution
+        if interior_mask.any():
+            # renormalize p_cdf to interior range
+            p_interior = torch.where(
+                interior_mask,
+                (p_cdf - left_tail_mass) / cumprobs_interior[..., -1],
+                torch.zeros_like(p_cdf),
+            )
+
+            # find bucket via searchsorted on interior cumprobs
+            cumprobs_norm = cumprobs_interior / cumprobs_interior[..., -1].unsqueeze(-1)
+            bucket_idx = torch.searchsorted(
+                cumprobs_norm.contiguous(),
+                p_interior.unsqueeze(-1).contiguous(),
+            ).squeeze(-1)
+            bucket_idx = bucket_idx.clamp(max=self.num_buckets - 1)
+
+            # get remaining probability within bucket
+            cumprobs_before = torch.cat(
+                [torch.zeros_like(cumprobs_norm[..., :1]), cumprobs_norm[..., :-1]],
+                dim=-1,
+            )
+            rest_prob = p_interior - cumprobs_before.gather(
+                -1, bucket_idx.unsqueeze(-1)
+            ).squeeze(-1)
+
+            # get bucket boundaries and probabilities (use interior probs)
+            left_border = borders[bucket_idx]
+            right_border = borders[bucket_idx + 1]
+            bucket_probs_interior = (
+                interior_probs.gather(-1, bucket_idx.unsqueeze(-1)).squeeze(-1)
+                / cumprobs_interior[..., -1]
+            )
+
+            # numerical guard
+            bucket_probs_interior = bucket_probs_interior.clamp_min(1e-12)
+
+            # linear interpolation
+            interp_factor = (
+                (rest_prob / bucket_probs_interior)
+                .clamp(0.0, 1.0)
+                .to(calc_dtype)
+            )
+            samples[interior_mask] = (
+                left_border + (right_border - left_border) * interp_factor
+            )[interior_mask]
+
+        # sanity check
+        assert torch.all(torch.isfinite(samples)), "Samples must be finite"
+
+        return samples
 
     def log_bucket_densities(
         self,

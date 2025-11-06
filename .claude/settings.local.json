@@ -7,7 +7,8 @@
       "Bash(uv run pytest:*)",
       "Bash(uvx ty check:*)",
       "Bash(uv run python:*)",
-      "Bash(timeout 60 uv run python:*)"
+      "Bash(timeout 60 uv run python:*)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ],
     "deny": [],
     "ask": []

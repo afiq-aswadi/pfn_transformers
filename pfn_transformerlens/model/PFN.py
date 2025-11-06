@@ -20,6 +20,17 @@ from .PFNMasks import create_custom_mask_hook
 
 @dataclass
 class DistributionPrediction:
+    """Prediction output for distributional models.
+
+    Attributes:
+        probs: Probabilities over buckets for each position.
+        y_grid: Bucket representative values (midpoints). These are reference
+            points for the mode/expectation, not the full continuous sample space.
+            Actual samples from generate() will be uniformly distributed within
+            buckets (and in half-normal tails for unbounded support).
+        logits: Optional raw logits over buckets.
+    """
+
     probs: Float[torch.Tensor, "... seq d_vocab"]
     y_grid: Float[torch.Tensor, " d_vocab"]
     logits: Optional[Float[torch.Tensor, "... seq d_vocab"]] = None
@@ -357,18 +368,22 @@ class UnsupervisedPFN(BasePFN):
 
             # sample or take mode based on prediction type
             if self.config.prediction_type == "distribution":
-                probs = F.softmax(logits_last / temperature, dim=-1)
                 if sample:
                     if self.config.input_type == "discrete":
+                        probs = F.softmax(logits_last / temperature, dim=-1)
                         token_new = torch.multinomial(probs, 1).squeeze(-1)
                         token_new = token_new.float()
                     else:  # continuous with bucketing
-                        bucket_idx = torch.multinomial(probs, 1).squeeze(-1)
-                        token_new = self.get_y_values(bucket_idx.unsqueeze(0))[0]
+                        # sample continuously within buckets using inverse CDF
+                        token_new = self.bucketizer.sample(
+                            logits_last.unsqueeze(0), temperature
+                        )[0]
                 else:
+                    probs = F.softmax(logits_last / temperature, dim=-1)
                     if self.config.input_type == "discrete":
                         token_new = torch.argmax(probs, dim=-1).float()
                     else:  # continuous with bucketing
+                        # deterministic: use bucket midpoint (mode of uniform within bucket)
                         bucket_idx = torch.argmax(probs, dim=-1)
                         token_new = self.get_y_values(bucket_idx.unsqueeze(0))[0]
 
@@ -380,7 +395,10 @@ class UnsupervisedPFN(BasePFN):
             if context.shape[0] == 0:
                 context = token_new.unsqueeze(0)
             else:
-                context = torch.cat([context, token_new.unsqueeze(0)], dim=0)
+                context = torch.cat(
+                    [context, token_new.to(context.dtype).unsqueeze(0)],
+                    dim=0,
+                )
 
         if was_training:
             self.train()
@@ -656,13 +674,16 @@ class SupervisedPFN(BasePFN):
                 isinstance(self.config, SupervisedRegressionPFNConfig)
                 and self.config.prediction_type == "distribution"
             ):
-                probs = F.softmax(logits_last / temperature, dim=-1)
                 if sample:
-                    bucket_idx = torch.multinomial(probs, 1).squeeze(-1)
+                    # sample continuously within buckets using inverse CDF
+                    y_new = self.bucketizer.sample(
+                        logits_last.unsqueeze(0), temperature
+                    )[0]
                 else:
+                    # deterministic: use bucket midpoint (mode of uniform within bucket)
+                    probs = F.softmax(logits_last / temperature, dim=-1)
                     bucket_idx = torch.argmax(probs, dim=-1)
-                # decode bucket to continuous value
-                y_new = self.get_y_values(bucket_idx.unsqueeze(0))[0]
+                    y_new = self.get_y_values(bucket_idx.unsqueeze(0))[0]
 
             else:  # point prediction
                 # logits is actually the predicted value
@@ -670,7 +691,13 @@ class SupervisedPFN(BasePFN):
 
             # add to context
             x_context = torch.cat([x_context, x_new], dim=0)
-            y_context = torch.cat([y_context, y_new.unsqueeze(0)], dim=0)
+            if y_context.shape[0] == 0:
+                y_context = y_new.unsqueeze(0)
+            else:
+                y_context = torch.cat(
+                    [y_context, y_new.to(y_context.dtype).unsqueeze(0)],
+                    dim=0,
+                )
 
         if was_training:
             self.train()

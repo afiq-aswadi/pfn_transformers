@@ -462,3 +462,69 @@ def test_sample_zero_mass_bucket_stability() -> None:
     # (no samples outside the borders for bounded support)
     assert torch.all(samples >= bucketizer.borders[0])
     assert torch.all(samples <= bucketizer.borders[-1])
+
+
+def test_sample_riemann_bounded_histogram() -> None:
+    """Riemann bucket sampling should respect bucket probabilities."""
+    borders = [-3.0, -1.0, -0.2, 1.0, 3.0]
+    bucketizer = build_riemann_bucketizer(borders, bucket_support="bounded")
+    num_samples = 50000
+
+    logits = torch.zeros(bucketizer.num_buckets)
+    logits_batch = logits.repeat(num_samples, 1)
+    gen = torch.Generator().manual_seed(123)
+
+    samples = bucketizer.sample(logits_batch, temperature=1.0, generator=gen)
+
+    assert torch.all(samples >= bucketizer.borders[0])
+    assert torch.all(samples <= bucketizer.borders[-1])
+
+    bucket_indices = bucketizer.bucketize(samples)
+    counts = torch.bincount(bucket_indices.long(), minlength=bucketizer.num_buckets)
+
+    expected_probs = torch.full((bucketizer.num_buckets,), 1.0 / bucketizer.num_buckets)
+    chi_squared = torch.sum(
+        (counts.float() - num_samples * expected_probs) ** 2
+        / (num_samples * expected_probs)
+    )
+    assert chi_squared < 20.0
+
+
+def test_sample_riemann_unbounded_tails() -> None:
+    """Riemann buckets with unbounded support should sample half-normal tails."""
+    borders = [-3.0, -1.5, -0.5, 1.0, 2.5]
+    bucketizer = build_riemann_bucketizer(borders, bucket_support="unbounded")
+    num_samples = 50000
+
+    logits = torch.tensor([2.0, -0.5, -0.5, 2.0])
+    logits_batch = logits.repeat(num_samples, 1)
+    gen = torch.Generator().manual_seed(321)
+
+    samples = bucketizer.sample(logits_batch, temperature=1.0, generator=gen)
+    assert torch.all(torch.isfinite(samples))
+
+    left_bucket = (samples >= bucketizer.borders[0]) & (
+        samples < bucketizer.borders[1]
+    )
+    right_bucket = (samples >= bucketizer.borders[-2]) & (
+        samples < bucketizer.borders[-1]
+    )
+    left_tail = samples < bucketizer.borders[0]
+    right_tail = samples >= bucketizer.borders[-1]
+
+    total_left = left_bucket.sum() + left_tail.sum()
+    total_right = right_bucket.sum() + right_tail.sum()
+    assert total_left.item() > 0
+    assert total_right.item() > 0
+
+    left_tail_ratio = left_tail.sum().float() / total_left.float()
+    right_tail_ratio = right_tail.sum().float() / total_right.float()
+    assert 0.45 < left_tail_ratio < 0.55
+    assert 0.45 < right_tail_ratio < 0.55
+
+    if left_tail.any():
+        distances = bucketizer.borders[0] - samples[left_tail]
+        assert torch.all(distances > 0)
+    if right_tail.any():
+        distances = samples[right_tail] - bucketizer.borders[-1]
+        assert torch.all(distances > 0)

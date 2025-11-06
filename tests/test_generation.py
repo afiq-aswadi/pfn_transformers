@@ -139,6 +139,106 @@ class TestSupervisedGeneration:
         # allow small tolerance for bucket decoding edge cases
         assert torch.all((y_gen >= -2.1) & (y_gen <= 2.1))
 
+    def test_generation_with_distribution_prediction_unbounded_uniform(self) -> None:
+        """Uniform buckets with unbounded support should yield tail samples."""
+        config = SupervisedRegressionPFNConfig(
+            n_layers=2,
+            d_model=64,
+            n_ctx=128,
+            d_head=32,
+            n_heads=2,
+            d_vocab=10,
+            input_dim=1,
+            prediction_type="distribution",
+            bucket_type="uniform",
+            bucket_support="unbounded",
+            y_min=-2.0,
+            y_max=2.0,
+            act_fn="gelu",
+        )
+        model = PFNModel(config)
+
+        x_distribution = Normal(0.0, 1.0)
+        num_generate = 64  # stay within context length
+        torch.manual_seed(0)
+        _, y_gen = model.generate(
+            x_distribution=x_distribution,
+            num_generate=num_generate,
+            sample=True,
+            temperature=1.0,
+        )
+
+        assert y_gen.shape == (num_generate,)
+        assert torch.all(torch.isfinite(y_gen))
+
+    def test_generation_with_riemann_buckets_bounded(self) -> None:
+        """Riemann buckets (bounded) should keep samples within provided borders."""
+        borders = torch.tensor([-3.0, -1.0, 0.0, 1.0, 4.0])
+        config = SupervisedRegressionPFNConfig(
+            n_layers=2,
+            d_model=64,
+            n_ctx=128,
+            d_head=32,
+            n_heads=2,
+            d_vocab=4,
+            input_dim=1,
+            prediction_type="distribution",
+            bucket_type="riemann",
+            bucket_support="bounded",
+            riemann_borders=borders,
+            act_fn="gelu",
+        )
+        model = PFNModel(config)
+
+        x_distribution = Normal(0.0, 1.0)
+        num_generate = 32
+        torch.manual_seed(1)
+
+        _, y_gen = model.generate(
+            x_distribution=x_distribution,
+            num_generate=num_generate,
+            sample=True,
+            temperature=1.0,
+        )
+
+        assert y_gen.shape == (num_generate,)
+        assert torch.all(torch.isfinite(y_gen))
+        assert y_gen.min() >= borders.min()
+        assert y_gen.max() <= borders.max()
+
+    def test_generation_with_riemann_buckets_unbounded(self) -> None:
+        """Unbounded Riemann buckets should produce tail samples."""
+        borders = torch.tensor([-3.0, -1.5, -0.5, 1.0, 3.5])
+        config = SupervisedRegressionPFNConfig(
+            n_layers=2,
+            d_model=64,
+            n_ctx=128,
+            d_head=32,
+            n_heads=2,
+            d_vocab=4,
+            input_dim=1,
+            prediction_type="distribution",
+            bucket_type="riemann",
+            bucket_support="unbounded",
+            riemann_borders=borders,
+            act_fn="gelu",
+        )
+        model = PFNModel(config)
+
+        x_distribution = Normal(0.0, 1.0)
+        num_generate = 64
+        torch.manual_seed(1)
+
+        _, y_gen = model.generate(
+            x_distribution=x_distribution,
+            num_generate=num_generate,
+            sample=True,
+            temperature=1.0,
+        )
+
+        assert y_gen.shape == (num_generate,)
+        assert torch.all(torch.isfinite(y_gen))
+
     def test_generation_with_point_prediction(self) -> None:
         """Test generation with point predictions."""
         config = SupervisedRegressionPFNConfig(
@@ -480,6 +580,95 @@ class TestUnsupervisedGeneration:
         # generated values should be approximately within bucket range
         # allow small tolerance for bucket decoding edge cases
         assert torch.all((y_gen >= -3.2) & (y_gen <= 3.2))
+
+    def test_continuous_distribution_generation_unbounded_uniform(self) -> None:
+        """Unbounded uniform buckets should occasionally sample tails."""
+        config = UnsupervisedPFNConfig(
+            n_layers=2,
+            d_model=64,
+            n_ctx=128,
+            d_head=32,
+            n_heads=2,
+            d_vocab=10,
+            input_type="continuous",
+            prediction_type="distribution",
+            bucket_type="uniform",
+            bucket_support="unbounded",
+            y_min=-3.0,
+            y_max=3.0,
+        )
+        model = PFNModel(config)
+
+        num_generate = 64
+        torch.manual_seed(0)
+        y_gen = model.generate(
+            num_generate=num_generate,
+            sample=True,
+            temperature=1.0,
+        )
+
+        assert y_gen.shape == (num_generate,)
+        assert torch.all(torch.isfinite(y_gen))
+
+    def test_continuous_distribution_generation_riemann_bounded(self) -> None:
+        """Unsupervised Riemann buckets with bounded support stay within borders."""
+        borders = torch.tensor([-4.0, -2.0, -0.5, 1.0, 2.5])
+        config = UnsupervisedPFNConfig(
+            n_layers=2,
+            d_model=64,
+            n_ctx=128,
+            d_head=32,
+            n_heads=2,
+            d_vocab=4,
+            input_type="continuous",
+            prediction_type="distribution",
+            bucket_type="riemann",
+            bucket_support="bounded",
+            riemann_borders=borders,
+        )
+        model = PFNModel(config)
+
+        num_generate = 64
+        torch.manual_seed(1)
+        y_gen = model.generate(
+            num_generate=num_generate,
+            sample=True,
+            temperature=1.0,
+        )
+
+        assert y_gen.shape == (num_generate,)
+        assert torch.all(torch.isfinite(y_gen))
+        assert y_gen.min() >= borders.min()
+        assert y_gen.max() <= borders.max()
+
+    def test_continuous_distribution_generation_riemann_unbounded(self) -> None:
+        """Riemann buckets with unbounded support should emit tails."""
+        borders = torch.tensor([-4.0, -1.5, -0.75, 0.5, 2.0])
+        config = UnsupervisedPFNConfig(
+            n_layers=2,
+            d_model=64,
+            n_ctx=128,
+            d_head=32,
+            n_heads=2,
+            d_vocab=4,
+            input_type="continuous",
+            prediction_type="distribution",
+            bucket_type="riemann",
+            bucket_support="unbounded",
+            riemann_borders=borders,
+        )
+        model = PFNModel(config)
+
+        num_generate = 64
+        torch.manual_seed(1)
+        y_gen = model.generate(
+            num_generate=num_generate,
+            sample=True,
+            temperature=1.0,
+        )
+
+        assert y_gen.shape == (num_generate,)
+        assert torch.all(torch.isfinite(y_gen))
 
     def test_sampling_produces_variation(self) -> None:
         """Test that sampling produces different sequences."""

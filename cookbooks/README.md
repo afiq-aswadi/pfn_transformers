@@ -7,10 +7,10 @@ This directory contains executable cookbook examples demonstrating various capab
 Each cookbook is a standalone Python script that can be run with:
 
 ```bash
-uv run python workbooks/XX_name.py
+uv run python cookbooks/XX_name.py
 ```
 
-All outputs (plots, checkpoints) are saved to `workbooks/outputs/XX_name/`.
+All outputs (plots, checkpoints) are saved to `cookbooks/outputs/XX_name/`.
 
 ## Available Cookbooks
 
@@ -93,6 +93,19 @@ Trains a PFN to perform binary classification on 2D points:
 - Includes calibration analysis and prediction accuracy plots
 
 **Key concepts**: ClassificationPFNConfig, DeterministicGenerator with discrete outputs, non-linear decision boundaries
+
+---
+
+### 07_continuous_sampling_demo.py
+**Sampling: Continuous Buckets and Tails**
+
+Shows how `Bucketizer.sample` draws continuous values from bucketed distributions.
+
+- Compares bounded vs unbounded support using uniform buckets
+- Visualizes histograms and bucket borders to highlight tails
+- Prints summary statistics and contrasts with midpoint decoding
+
+**Key concepts**: Bucketizer.sample, half-normal tails, temperature scaling, histogram visualization
 
 ## Common Patterns
 

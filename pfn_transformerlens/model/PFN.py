@@ -309,6 +309,7 @@ class UnsupervisedPFN(BasePFN):
         sample: bool = True,
         temperature: float = 1.0,
     ) -> Float[torch.Tensor, "total_len"]:
+    # TODO: add return logits option? perhaps even cache too?
         """Generate sequence autoregressively.
 
         Standard GPT-2 style generation where the model predicts the next token
@@ -321,8 +322,10 @@ class UnsupervisedPFN(BasePFN):
         prompt : Float[torch.Tensor, "K_init"] | None
             Initial context tokens. If None, generation starts from scratch.
         sample : bool, default True
-            Whether to sample from predicted distribution or take mode.
-            For point predictions, this parameter is ignored.
+            Whether to sample from predicted distribution or take mode. For
+            continuous distributions, sampling uses :meth:`Bucketizer.sample`
+            (inverse-CDF within buckets). For point predictions, this parameter
+            is ignored.
         temperature : float, default 1.0
             Sampling temperature for distribution predictions.
 
@@ -420,9 +423,12 @@ class UnsupervisedPFN(BasePFN):
     ):
         """Return predictions aligned with the configured prediction_type.
 
-        For distributional configs, returns bucket probabilities (optionally logits) and the
-        continuous y-grid. For point configs, returns direct regression estimates.
-        Inputs may be provided with or without an explicit batch dimension.
+        For distributional configs, returns bucket probabilities (optionally logits)
+        and the continuous y-grid. The `y_grid` contains bucket representatives
+        (midpoints) suitable for inspecting modes/expectations; sampling continuous
+        values should instead use :meth:`generate` or :meth:`Bucketizer.sample`.
+        For point configs, returns direct regression estimates. Inputs may be
+        provided with or without an explicit batch dimension.
 
         Parameters
         ----------
@@ -597,8 +603,10 @@ class SupervisedPFN(BasePFN):
         prompt_y : Float[torch.Tensor, "K_init"] | None
             Initial y context. Must be provided if prompt_x is provided.
         sample : bool, default True
-            Whether to sample from predicted distribution or take mode.
-            For point predictions, this parameter is ignored.
+            Whether to sample from predicted distribution or take mode. For
+            continuous distributions, sampling uses :meth:`Bucketizer.sample`
+            (inverse-CDF within buckets). For point predictions, this parameter
+            is ignored.
         temperature : float, default 1.0
             Sampling temperature for distribution predictions.
 
@@ -724,9 +732,11 @@ class SupervisedPFN(BasePFN):
     ):
         """Return predictions aligned with the configured prediction_type.
 
-        For distributional configs, this returns bucket probabilities (optionally logits) and the
-        continuous y-grid. For point configs, this returns direct regression estimates.
-        For classification configs, this returns class probabilities.
+        For distributional configs, this returns bucket probabilities (optionally
+        logits) and the continuous y-grid. The y-grid contains bucket midpoints for
+        density inspection; to draw continuous samples use :meth:`generate` or
+        :meth:`Bucketizer.sample`. For point configs, this returns direct regression
+        estimates. For classification configs, this returns class probabilities.
         Inputs may be provided with or without an explicit batch dimension.
 
         Parameters

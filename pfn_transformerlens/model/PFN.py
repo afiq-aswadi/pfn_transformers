@@ -24,10 +24,10 @@ class DistributionPrediction:
 
     Attributes:
         probs: Probabilities over buckets for each position.
-        y_grid: Bucket representative values (midpoints). These are reference
-            points for the mode/expectation, not the full continuous sample space.
-            Actual samples from generate() will be uniformly distributed within
-            buckets (and in half-normal tails for unbounded support).
+        y_grid: Bucket representative values. For bounded support and interior
+            buckets, these are midpoints. For unbounded support edge buckets,
+            these are modes (at the inner boundary where half-normal peaks).
+            For continuous sampling, use generate() or Bucketizer.sample().
         logits: Optional raw logits over buckets.
     """
 
@@ -120,7 +120,11 @@ class BasePFN(nn.Module, ABC):
         self,
         bucket_indices: Int[torch.Tensor, "batch seq"],
     ) -> Float[torch.Tensor, "batch seq"]:
-        """Convert bucket indices back to their representative continuous y values."""
+        """Convert bucket indices back to their representative continuous y values.
+
+        Returns midpoints for bounded support and interior buckets.
+        For unbounded support edge buckets, returns modes (at inner boundary).
+        """
         return self.bucketizer.decode(bucket_indices)
 
     def log_bucket_densities(
@@ -308,9 +312,11 @@ class UnsupervisedPFN(BasePFN):
         prompt: Float[torch.Tensor, "K_init"] | None = None,
         sample: bool = True,
         temperature: float = 1.0,
-    ) -> Float[torch.Tensor, "total_len"]:
-    # TODO: add return logits option? perhaps even cache too?
-        """Generate sequence autoregressively.
+        num_rollouts: int = 1,
+    ) -> (
+        Float[torch.Tensor, "total_len"] | Float[torch.Tensor, "num_rollouts total_len"]
+    ):
+        """Generate sequence autoregressively with optional parallel rollouts.
 
         Standard GPT-2 style generation where the model predicts the next token
         given all previous tokens. The model's own predictions feed back as context.
@@ -318,9 +324,10 @@ class UnsupervisedPFN(BasePFN):
         Parameters
         ----------
         num_generate : int
-            Number of new tokens to generate.
+            Number of new tokens to generate per rollout.
         prompt : Float[torch.Tensor, "K_init"] | None
             Initial context tokens. If None, generation starts from scratch.
+            Single prompt is broadcast across all rollouts.
         sample : bool, default True
             Whether to sample from predicted distribution or take mode. For
             continuous distributions, sampling uses :meth:`Bucketizer.sample`
@@ -328,46 +335,52 @@ class UnsupervisedPFN(BasePFN):
             is ignored.
         temperature : float, default 1.0
             Sampling temperature for distribution predictions.
+        num_rollouts : int, default 1
+            Number of independent parallel rollouts to generate.
 
         Returns
         -------
-        Float[torch.Tensor, "total_len"]
-            Generated sequence including the prompt.
+        Float[torch.Tensor, "total_len"] | Float[torch.Tensor, "num_rollouts total_len"]
+            Generated sequence(s) including the prompt.
+            - If num_rollouts == 1: returns (total_len,) for backward compatibility
+            - If num_rollouts > 1: returns (num_rollouts, total_len)
             total_len = K_init + num_generate
 
         Raises
         ------
         ValueError
-            If temperature <= 0.
+            If temperature <= 0 or num_rollouts < 1.
         """
         if temperature <= 0:
             raise ValueError("temperature must be > 0")
+        if num_rollouts < 1:
+            raise ValueError("num_rollouts must be >= 1")
 
         was_training = self.training
         self.eval()
 
         device = next(self.parameters()).device
 
-        # initialize context with prompt or empty
+        # initialize context: (num_rollouts, seq_len)
         if prompt is not None:
-            context = prompt.to(device)
+            # broadcast single prompt across all rollouts
+            context = prompt.to(device).unsqueeze(0).expand(num_rollouts, -1)
         else:
-            context = torch.empty(0, device=device)
+            context = torch.empty(num_rollouts, 0, device=device)
 
         # generate num_generate new tokens
         for _ in range(num_generate):
             # run forward pass on current sequence
-            if context.shape[0] == 0:
+            if context.shape[1] == 0:
                 # special case: empty context, predict first token
-                # use a dummy token as input (will be ignored in practice)
-                context_batch = torch.zeros(1, 1, device=device)
+                context_batch = torch.zeros(num_rollouts, 1, device=device)
             else:
-                context_batch = context.unsqueeze(0)  # (1, seq)
+                context_batch = context  # (num_rollouts, seq)
 
-            logits = self(context_batch)  # (1, seq, d_vocab)
+            logits = self(context_batch)  # (num_rollouts, seq, d_vocab)
 
             # get prediction for next token at last position
-            logits_last = logits[0, -1, :]  # (d_vocab,)
+            logits_last = logits[:, -1, :]  # (num_rollouts, d_vocab)
 
             # sample or take mode based on prediction type
             if self.config.prediction_type == "distribution":
@@ -378,33 +391,39 @@ class UnsupervisedPFN(BasePFN):
                         token_new = token_new.float()
                     else:  # continuous with bucketing
                         # sample continuously within buckets using inverse CDF
-                        token_new = self.bucketizer.sample(
-                            logits_last.unsqueeze(0), temperature
-                        )[0]
+                        token_new = self.bucketizer.sample(logits_last, temperature)
                 else:
                     probs = F.softmax(logits_last / temperature, dim=-1)
                     if self.config.input_type == "discrete":
                         token_new = torch.argmax(probs, dim=-1).float()
                     else:  # continuous with bucketing
-                        # deterministic: use bucket midpoint (mode of uniform within bucket)
+                        # deterministic: use bucket representative (mode for most likely bucket)
                         bucket_idx = torch.argmax(probs, dim=-1)
-                        token_new = self.get_y_values(bucket_idx.unsqueeze(0))[0]
+                        token_new = self.get_y_values(bucket_idx.unsqueeze(-1)).squeeze(
+                            -1
+                        )
 
             else:  # point prediction
                 # logits is the predicted value
-                token_new = logits_last[0]  # point predictions have d_vocab_out=1
+                token_new = logits_last[
+                    :, 0
+                ]  # (num_rollouts,) point predictions have d_vocab_out=1
 
-            # add to context
-            if context.shape[0] == 0:
-                context = token_new.unsqueeze(0)
+            # add to context: (num_rollouts, seq+1)
+            if context.shape[1] == 0:
+                context = token_new.unsqueeze(1)
             else:
                 context = torch.cat(
-                    [context, token_new.to(context.dtype).unsqueeze(0)],
-                    dim=0,
+                    [context, token_new.to(context.dtype).unsqueeze(1)],
+                    dim=1,
                 )
 
         if was_training:
             self.train()
+
+        # backward compatibility: return (total_len,) for single rollout
+        if num_rollouts == 1:
+            return context[0]
 
         return context
 
@@ -583,10 +602,14 @@ class SupervisedPFN(BasePFN):
         prompt_y: Float[torch.Tensor, "K_init"] | None = None,
         sample: bool = True,
         temperature: float = 1.0,
+        num_rollouts: int = 1,
     ) -> tuple[
-        Float[torch.Tensor, "total_len input_dim"], Float[torch.Tensor, "total_len"]
+        Float[torch.Tensor, "total_len input_dim"]
+        | Float[torch.Tensor, "num_rollouts total_len input_dim"],
+        Float[torch.Tensor, "total_len"]
+        | Float[torch.Tensor, "num_rollouts total_len"],
     ]:
-        """Generate (x, y) pairs autoregressively.
+        """Generate (x, y) pairs autoregressively with optional parallel rollouts.
 
         The model generates y values conditioned on x, where x values are sampled from
         x_distribution and y values are predicted by the model. The model's own y
@@ -597,9 +620,10 @@ class SupervisedPFN(BasePFN):
         x_distribution : Distribution
             Distribution to sample x values from.
         num_generate : int
-            Number of new (x, y) pairs to generate.
+            Number of new (x, y) pairs to generate per rollout.
         prompt_x : Float[torch.Tensor, "K_init input_dim"] | None
             Initial x context. If None, generation starts from scratch.
+            Single prompt is broadcast across all rollouts.
         prompt_y : Float[torch.Tensor, "K_init"] | None
             Initial y context. Must be provided if prompt_x is provided.
         sample : bool, default True
@@ -609,22 +633,28 @@ class SupervisedPFN(BasePFN):
             is ignored.
         temperature : float, default 1.0
             Sampling temperature for distribution predictions.
+        num_rollouts : int, default 1
+            Number of independent parallel rollouts to generate.
 
         Returns
         -------
-        tuple[Float[torch.Tensor, "total_len input_dim"], Float[torch.Tensor, "total_len"]]
+        tuple of tensors
             Generated (x, y) sequences including the prompt.
+            - If num_rollouts == 1: ((total_len, input_dim), (total_len,))
+            - If num_rollouts > 1: ((num_rollouts, total_len, input_dim), (num_rollouts, total_len))
             total_len = K_init + num_generate
 
         Raises
         ------
         ValueError
-            If temperature <= 0.
+            If temperature <= 0 or num_rollouts < 1.
         AssertionError
             If prompt_x and prompt_y have mismatched lengths.
         """
         if temperature <= 0:
             raise ValueError("temperature must be > 0")
+        if num_rollouts < 1:
+            raise ValueError("num_rollouts must be >= 1")
 
         was_training = self.training
         self.eval()
@@ -637,37 +667,41 @@ class SupervisedPFN(BasePFN):
                 f"prompt_x and prompt_y must have same length, "
                 f"got {prompt_x.shape[0]} and {prompt_y.shape[0]}"
             )
-            x_context = prompt_x.to(device)
-            y_context = prompt_y.to(device)
+            # broadcast single prompt across all rollouts
+            x_context = (
+                prompt_x.to(device).unsqueeze(0).expand(num_rollouts, -1, -1)
+            )  # (num_rollouts, K_init, input_dim)
+            y_context = (
+                prompt_y.to(device).unsqueeze(0).expand(num_rollouts, -1)
+            )  # (num_rollouts, K_init)
         elif prompt_x is None and prompt_y is None:
-            x_context = torch.empty(0, self.config.input_dim, device=device)
-            y_context = torch.empty(0, device=device)
+            x_context = torch.empty(
+                num_rollouts, 0, self.config.input_dim, device=device
+            )
+            y_context = torch.empty(num_rollouts, 0, device=device)
         else:
             raise ValueError("Both prompt_x and prompt_y must be provided or both None")
 
         # generate num_generate new pairs
         for _ in range(num_generate):
-            # sample new x
-            x_new = x_distribution.sample((1, self.config.input_dim)).to(device)
+            # sample new x for each rollout
+            x_new = x_distribution.sample((num_rollouts, 1, self.config.input_dim)).to(
+                device
+            )
 
             # build current context: all previous (x,y) pairs + new x
-            # we need to predict y for the new x
-            x_full = torch.cat([x_context, x_new], dim=0)
+            x_full = torch.cat(
+                [x_context, x_new], dim=1
+            )  # (num_rollouts, seq+1, input_dim)
 
             # for prediction, we need a y placeholder at the last position
-            # the model will predict what this should be
-            # we use a dummy value (0.0) since it will be masked out
-            y_dummy = torch.zeros(1, device=device)
-            y_full = torch.cat([y_context, y_dummy], dim=0)
+            y_dummy = torch.zeros(num_rollouts, 1, device=device)
+            y_full = torch.cat([y_context, y_dummy], dim=1)  # (num_rollouts, seq+1)
 
-            # run forward pass (batch size 1)
-            x_batch = x_full.unsqueeze(0)  # (1, seq, input_dim)
-            y_batch = y_full.unsqueeze(0)  # (1, seq)
-
-            logits = self(x_batch, y_batch)  # (1, seq, d_vocab)
+            logits = self(x_full, y_full)  # (num_rollouts, seq+1, d_vocab)
 
             # get prediction for the last position
-            logits_last = logits[0, -1, :]  # (d_vocab,)
+            logits_last = logits[:, -1, :]  # (num_rollouts, d_vocab)
 
             # sample or take mode based on prediction type
             if isinstance(self.config, ClassificationPFNConfig):
@@ -684,31 +718,35 @@ class SupervisedPFN(BasePFN):
             ):
                 if sample:
                     # sample continuously within buckets using inverse CDF
-                    y_new = self.bucketizer.sample(
-                        logits_last.unsqueeze(0), temperature
-                    )[0]
+                    y_new = self.bucketizer.sample(logits_last, temperature)
                 else:
-                    # deterministic: use bucket midpoint (mode of uniform within bucket)
+                    # deterministic: use bucket representative (mode for most likely bucket)
                     probs = F.softmax(logits_last / temperature, dim=-1)
                     bucket_idx = torch.argmax(probs, dim=-1)
-                    y_new = self.get_y_values(bucket_idx.unsqueeze(0))[0]
+                    y_new = self.get_y_values(bucket_idx.unsqueeze(-1)).squeeze(-1)
 
             else:  # point prediction
                 # logits is actually the predicted value
-                y_new = logits_last[0]  # point predictions have d_vocab=1
+                y_new = logits_last[
+                    :, 0
+                ]  # (num_rollouts,) point predictions have d_vocab=1
 
             # add to context
-            x_context = torch.cat([x_context, x_new], dim=0)
-            if y_context.shape[0] == 0:
-                y_context = y_new.unsqueeze(0)
+            x_context = torch.cat([x_context, x_new], dim=1)
+            if y_context.shape[1] == 0:
+                y_context = y_new.unsqueeze(1)
             else:
                 y_context = torch.cat(
-                    [y_context, y_new.to(y_context.dtype).unsqueeze(0)],
-                    dim=0,
+                    [y_context, y_new.to(y_context.dtype).unsqueeze(1)],
+                    dim=1,
                 )
 
         if was_training:
             self.train()
+
+        # backward compatibility: return single rollout shapes
+        if num_rollouts == 1:
+            return x_context[0], y_context[0]
 
         return x_context, y_context
 

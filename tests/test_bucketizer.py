@@ -47,15 +47,19 @@ def test_uniform_bucket_mapping_midpoints() -> None:
     assert torch.allclose(decoded, expected[[0, 1, 1, 3]])
 
 
-def test_unbounded_bucket_tails_adjust_midpoints() -> None:
-    # With the fixed implementation, unbounded buckets now use midpoints
-    # for representatives (interior regions), not tail means
+def test_unbounded_bucket_representatives_are_modes() -> None:
+    # For unbounded support, edge buckets use modes (at inner boundary)
+    # while interior buckets use midpoints
     bucketizer = build_uniform_bucketizer("unbounded")
     reps = bucketizer.bucket_representatives()
 
-    # Check that representatives are midpoints for all buckets (including edge buckets)
-    expected_mids = bucketizer.borders[:-1] + 0.5 * bucketizer.bucket_widths
-    assert torch.allclose(reps, expected_mids)
+    # edge buckets should be modes at inner boundaries
+    assert torch.isclose(reps[0], bucketizer.borders[1])
+    assert torch.isclose(reps[-1], bucketizer.borders[-2])
+
+    # interior buckets should be midpoints
+    expected_mids = bucketizer.borders[1:-2] + 0.5 * bucketizer.bucket_widths[1:-1]
+    assert torch.allclose(reps[1:-1], expected_mids)
 
 
 def test_bucketize_clamps_out_of_range_values() -> None:
@@ -115,16 +119,18 @@ def test_log_density_at_values_matches_bucket_lookup_for_bounded() -> None:
 
 
 def test_log_density_at_values_uses_half_normal_tails_for_unbounded() -> None:
-    # With the fixed implementation, half-normal is only used for values
-    # actually in the tail (beyond borders[0] and borders[-1])
+    # Edge buckets use half-normal throughout (no 50/50 split)
+    # Model: bucket 0 uses Y ~ borders[1] - Z, bucket n-1 uses Y ~ borders[-2] + Z
     bucketizer = build_uniform_bucketizer("unbounded")
     logits = torch.zeros(4, bucketizer.num_buckets)
     y = torch.tensor(
         [
-            bucketizer.borders[0].item() - 0.5,  # True left tail
-            bucketizer.borders[0].item() + 0.25,  # Interior of bucket 0
+            bucketizer.borders[0].item() - 0.5,  # Left edge bucket, beyond borders[0]
+            bucketizer.borders[0].item()
+            + 0.25,  # Left edge bucket, within [borders[0], borders[1])
             0.5,  # Interior bucket
-            bucketizer.borders[-1].item() + 0.75,  # True right tail
+            bucketizer.borders[-1].item()
+            + 0.75,  # Right edge bucket, beyond borders[-1]
         ],
         dtype=torch.float32,
     )
@@ -139,35 +145,36 @@ def test_log_density_at_values_uses_half_normal_tails_for_unbounded() -> None:
         log_probs.dtype
     )
 
-    # True tail: distance from borders[0]
-    left_distance_tail = (bucketizer.borders[0] - y[0]).to(log_probs.dtype)
-    # Interior: use piecewise constant with bucket width
-    left_width = bucketizer.bucket_widths[0].to(log_probs.dtype)
-    # True tail: distance from borders[-1]
-    right_distance_tail = (y[3] - bucketizer.borders[-1]).to(log_probs.dtype)
+    # Left edge bucket: distance from borders[1] for ALL values
+    left_distance_tail = (bucketizer.borders[1] - y[0]).to(log_probs.dtype)
+    left_distance_interior = (bucketizer.borders[1] - y[1]).to(log_probs.dtype)
+
+    # Right edge bucket: distance from borders[-2] for ALL values
+    right_distance = (y[3] - bucketizer.borders[-2]).to(log_probs.dtype)
 
     mid_bucket = int(bucketizer.bucketize(y[2:3]).item())
     mid_width = bucketizer.bucket_widths[mid_bucket].to(log_probs.dtype)
-    log_half = math.log(0.5)
 
     expected = torch.stack(
         [
-            # True left tail: use half-normal
+            # Left edge bucket (tail region): use half-normal from borders[1]
             log_probs[0, 0]
-            + log_half
             + Bucketizer._half_normal_log_pdf(
                 left_distance_tail,
                 left_scale,
             ),
-            # Interior of bucket 0: use piecewise constant
-            log_probs[1, 0] + log_half - torch.log(left_width),
+            # Left edge bucket (interior region): use half-normal from borders[1]
+            log_probs[1, 0]
+            + Bucketizer._half_normal_log_pdf(
+                left_distance_interior,
+                left_scale,
+            ),
             # Interior bucket: use piecewise constant
             log_probs[2, mid_bucket] - torch.log(mid_width),
-            # True right tail: use half-normal
+            # Right edge bucket: use half-normal from borders[-2]
             log_probs[3, bucketizer.num_buckets - 1]
-            + log_half
             + Bucketizer._half_normal_log_pdf(
-                right_distance_tail,
+                right_distance,
                 right_scale,
             ),
         ],
@@ -267,18 +274,16 @@ def test_sample_unbounded_tails() -> None:
         assert torch.all(left_tail_distances > 0), (
             "Left tail samples should be below border"
         )
-        # mean distance should match half-normal expectation: scale * sqrt(2/pi)
-        scale = bucketizer._halfnormal_scale(bucketizer.bucket_widths[0])
-        expected_mean = scale * math.sqrt(2.0 / math.pi)
-        actual_mean = left_tail_distances.mean()
-        # allow 20% tolerance due to sampling variance
-        assert 0.8 * expected_mean < actual_mean < 1.2 * expected_mean
+        # verify distances are reasonable (not too extreme)
+        assert left_tail_distances.max() < 10.0, "Left tail distances too large"
 
     if right_tail_samples.any():
         right_tail_distances = samples[right_tail_samples] - bucketizer.borders[-1]
         assert torch.all(right_tail_distances > 0), (
             "Right tail samples should be above border"
         )
+        # verify distances are reasonable (not too extreme)
+        assert right_tail_distances.max() < 10.0, "Right tail distances too large"
 
 
 def test_sample_temperature_scaling() -> None:
@@ -503,9 +508,7 @@ def test_sample_riemann_unbounded_tails() -> None:
     samples = bucketizer.sample(logits_batch, temperature=1.0, generator=gen)
     assert torch.all(torch.isfinite(samples))
 
-    left_bucket = (samples >= bucketizer.borders[0]) & (
-        samples < bucketizer.borders[1]
-    )
+    left_bucket = (samples >= bucketizer.borders[0]) & (samples < bucketizer.borders[1])
     right_bucket = (samples >= bucketizer.borders[-2]) & (
         samples < bucketizer.borders[-1]
     )

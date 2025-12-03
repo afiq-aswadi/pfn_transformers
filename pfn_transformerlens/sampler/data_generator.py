@@ -22,6 +22,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 import torch
 from jaxtyping import Float
 from torch.distributions import Distribution
+from torch.utils._pytree import tree_map
 
 from .prior_likelihood import LikelihoodDistribution, PriorDistribution
 
@@ -268,6 +269,7 @@ class DeterministicFunctionGenerator:
         input_dim: int,
         noise_std: float | None = 0.0,
         x_distribution: Distribution = torch.distributions.Normal(0.0, 1.0),
+        device: str | torch.device | None = None,
     ):
         """Initialize deterministic function generator.
 
@@ -286,6 +288,7 @@ class DeterministicFunctionGenerator:
             input_dim: Dimension of input features.
             noise_std: Standard deviation of Gaussian noise. Set to None for noiseless.
             x_distribution: Distribution for sampling x. Defaults to N(0,1).
+            device: Optional device to place sampled tensors on. Defaults to prior device.
 
         Examples:
             Single parameter:
@@ -305,12 +308,25 @@ class DeterministicFunctionGenerator:
         self.input_dim = input_dim
         self.noise_std = noise_std
         self.x_distribution = x_distribution
+        self.device = torch.device(device) if device is not None else None
 
     def generate(
         self, seq_len: int
     ) -> tuple[Float[torch.Tensor, "seq input_dim"], Float[torch.Tensor, "seq"]]:
         theta = self.prior.sample()
+        prior_device = getattr(self.prior, "device", None)
+        if prior_device is not None and not isinstance(prior_device, torch.device):
+            prior_device = torch.device(prior_device)
+        target_device = self.device or prior_device
+
+        if target_device is not None:
+            theta = tree_map(
+                lambda t: t.to(target_device) if torch.is_tensor(t) else t, theta
+            )
+
         x = self.x_distribution.sample((seq_len, self.input_dim))
+        if isinstance(x, torch.Tensor) and target_device is not None:
+            x = x.to(target_device)
 
         y = self.function(x, theta)
 
@@ -332,7 +348,19 @@ class DeterministicFunctionGenerator:
             Tuple of ((x, y), {"params": params}) where params matches prior.sample() output
         """
         params = self.prior.sample()
+        prior_device = getattr(self.prior, "device", None)
+        if prior_device is not None and not isinstance(prior_device, torch.device):
+            prior_device = torch.device(prior_device)
+        target_device = self.device or prior_device
+
+        if target_device is not None:
+            params = tree_map(
+                lambda t: t.to(target_device) if torch.is_tensor(t) else t, params
+            )
+
         x = self.x_distribution.sample((seq_len, self.input_dim))
+        if isinstance(x, torch.Tensor) and target_device is not None:
+            x = x.to(target_device)
 
         y = self.function(x, params)
 

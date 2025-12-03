@@ -37,6 +37,13 @@ from pfn_transformerlens.train import TrainingConfig, compute_loss, train
 class TestSupervisedDataGeneratorProtocol:
     """Test SupervisedDataGenerator protocol compliance."""
 
+    def _target_device(self) -> torch.device:
+        if torch.cuda.is_available():
+            return torch.device("cuda", torch.cuda.current_device())
+        if torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+
     def test_simple_supervised_generator(self) -> None:
         """Test that a simple supervised generator satisfies the protocol."""
 
@@ -97,6 +104,98 @@ class TestSupervisedDataGeneratorProtocol:
         x, y = gen.generate(15)
         assert x.shape == (15, 2)
         assert y.shape == (15,)
+
+    def test_deterministic_generator_tracks_prior_device(self) -> None:
+        """Ensure generator moves x to the prior's device."""
+
+        target_device = self._target_device()
+
+        class DevicePrior:
+            def __init__(self, input_dim: int) -> None:
+                self.device = target_device
+                self.input_dim = input_dim
+
+            def sample(self) -> torch.Tensor:
+                return torch.randn(self.input_dim, device=self.device)
+
+        capture: dict[str, torch.device] = {}
+
+        def linear_fn(x: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
+            capture["x_device"] = x.device
+            capture["theta_device"] = theta.device
+            return (x * theta).sum(dim=-1)
+
+        prior = DevicePrior(input_dim=2)
+        gen = DeterministicFunctionGenerator(
+            prior=prior,
+            function=linear_fn,
+            input_dim=2,
+        )
+
+        gen.generate(4)
+
+        assert capture["x_device"] == target_device
+        assert capture["theta_device"] == target_device
+
+    def test_deterministic_generator_explicit_device(self) -> None:
+        """Explicit device argument should move CPU priors to the target device."""
+
+        target_device = self._target_device()
+
+        class CPUPrior:
+            def sample(self) -> torch.Tensor:
+                return torch.randn(2)
+
+        capture: dict[str, torch.device] = {}
+
+        def linear_fn(x: torch.Tensor, theta: torch.Tensor) -> torch.Tensor:
+            capture["x_device"] = x.device
+            capture["theta_device"] = theta.device
+            return (x * theta).sum(dim=-1)
+
+        gen = DeterministicFunctionGenerator(
+            prior=CPUPrior(),
+            function=linear_fn,
+            input_dim=2,
+            device=target_device,
+        )
+
+        gen.generate(3)
+
+        assert capture["x_device"] == target_device
+        assert capture["theta_device"] == target_device
+
+    def test_deterministic_generator_nested_params(self) -> None:
+        """Nested parameter structures should also be moved to the target device."""
+
+        target_device = self._target_device()
+
+        class NestedPrior:
+            def sample(self) -> dict[str, torch.Tensor]:
+                return {
+                    "w": torch.randn(2),
+                    "b": torch.randn(1),
+                }
+
+        capture: dict[str, torch.device] = {}
+
+        def affine_fn(x: torch.Tensor, params: dict[str, torch.Tensor]) -> torch.Tensor:
+            capture["w_device"] = params["w"].device
+            capture["b_device"] = params["b"].device
+            return (x * params["w"]).sum(dim=-1) + params["b"]
+
+        gen = DeterministicFunctionGenerator(
+            prior=NestedPrior(),
+            function=affine_fn,
+            input_dim=2,
+            device=target_device,
+        )
+
+        (_, _), info = gen.generate_with_params(5)
+
+        assert capture["w_device"] == target_device
+        assert capture["b_device"] == target_device
+        assert info["params"]["w"].device == target_device
 
     def test_fixed_dataset_generator_is_supervised(self) -> None:
         """Test that FixedDatasetGenerator satisfies SupervisedDataGenerator."""

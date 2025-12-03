@@ -52,6 +52,10 @@ class TrainingConfig:
     Attributes:
         batch_size: DataLoader batch size.
         seq_len: Sequence length (x,y are interleaved internally by the model).
+        num_workers: DataLoader worker processes for data generation.
+        pin_memory: Whether to pin host memory for faster host-to-device copies.
+        prefetch_factor: Number of batches prefetched per worker (num_workers > 0).
+        persistent_workers: Keep workers alive between iterations (num_workers > 0).
         num_steps: Number of optimization steps.
         learning_rate: Base learning rate.
         weight_decay: Weight decay for AdamW.
@@ -85,6 +89,10 @@ class TrainingConfig:
 
     batch_size: int = 32
     seq_len: int = 64
+    num_workers: int = 0
+    pin_memory: bool = False
+    prefetch_factor: int = 2
+    persistent_workers: bool = False
     num_steps: int = 10000
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5

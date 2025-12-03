@@ -874,6 +874,25 @@ class SupervisedPFN(BasePFN):
     ):
         """Interleave x/y tokens, apply the PFN attention mask, and produce next-y logits.
 
+        Input Encoding (IMPORTANT):
+        ---------------------------
+        For autoregressive-pfn mask, x features are encoded at EVERY position (not just even).
+        This is because the autoregressive-pfn attention mask blocks attention to previous
+        x-token positions (even indices), so x must be present in each position's input
+        representation for the model to access current x features.
+
+        Token layout: [x0, x0+y0, x1, x1+y1, x2, x2+y2, ...]
+                       ^    ^     ^    ^     ^    ^
+                      pos0 pos1  pos2 pos3  pos4 pos5
+
+        The attention mask then ensures:
+        - Each position can attend to itself
+        - Each position can attend to previous ODD positions (y tokens)
+        - Each position CANNOT attend to previous EVEN positions (x-only tokens)
+
+        This differs from GPT2 masking where standard causal attention is used and
+        x/y are truly interleaved as separate token types.
+
         Parameters
         ----------
         x: Float[torch.Tensor, "batch seq input_dim"]
@@ -905,7 +924,10 @@ class SupervisedPFN(BasePFN):
             hidden[:, ::2, :] = x_proj
             hidden[:, 1::2, :] = x_proj + y_embed
         else:
-            # continuous y: concatenate x and y, then project
+            # continuous y: x at ALL positions, y only at odd positions
+            # NOTE: x is repeated to every position because the autoregressive-pfn mask
+            # blocks attention to previous x-token positions. Each position needs x in its
+            # input to access current features. See docstring for full explanation.
             xy_combined = torch.zeros(
                 batch_size,
                 2 * seq_len,
@@ -913,8 +935,8 @@ class SupervisedPFN(BasePFN):
                 device=device,
                 dtype=x.dtype,
             )
-            xy_combined[:, :, :input_dim] = x.repeat_interleave(2, dim=1)
-            xy_combined[:, 1::2, -1] = y
+            xy_combined[:, :, :input_dim] = x.repeat_interleave(2, dim=1)  # x at ALL positions
+            xy_combined[:, 1::2, -1] = y  # y only at odd positions
             hidden = self.input_proj(xy_combined)
         residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)
 
@@ -958,7 +980,25 @@ class SupervisedPFN(BasePFN):
         Float[torch.Tensor, "batch seq d_vocab"]
         | Tuple[Float[torch.Tensor, "batch seq d_vocab"], ActivationCache]
     ):
-        """Standard GPT-style causal pass without a custom attention hook."""
+        """Standard GPT-style causal pass without a custom attention hook.
+
+        Input Encoding:
+        ---------------
+        For GPT2 masking, x and y are truly interleaved as SEPARATE token types:
+        - x at EVEN positions (0, 2, 4, ...)
+        - y at ODD positions (1, 3, 5, ...)
+
+        Token layout: [x0, y0, x1, y1, x2, y2, ...]
+                       ^   ^   ^   ^   ^   ^
+                      pos0 pos1 pos2 pos3 pos4 pos5
+
+        With standard causal attention, each position can attend to ALL previous
+        positions, so y tokens can see both previous x and y tokens.
+
+        This differs from autoregressive-pfn where:
+        - x is encoded at EVERY position (not just even)
+        - The mask blocks attention to previous x-token positions
+        """
 
         batch_size, seq_len, input_dim = x.shape
         device = x.device
@@ -982,7 +1022,7 @@ class SupervisedPFN(BasePFN):
             hidden[:, ::2, :] = x_proj  # x at even positions
             hidden[:, 1::2, :] = x_proj + y_embed  # x plus y at odd positions
         else:
-            # continuous y: concatenate x and y, then project
+            # continuous y: TRUE interleaving - x at even, y at odd (separate tokens)
             xy_combined = torch.zeros(
                 batch_size,
                 2 * seq_len,
@@ -990,8 +1030,8 @@ class SupervisedPFN(BasePFN):
                 device=device,
                 dtype=x.dtype,
             )
-            xy_combined[:, :, :input_dim] = x
-            xy_combined[:, 1::2, -1] = y
+            xy_combined[:, ::2, :input_dim] = x  # x at EVEN positions only
+            xy_combined[:, 1::2, -1] = y  # y at ODD positions only
             hidden = self.input_proj(xy_combined)
         residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)
 

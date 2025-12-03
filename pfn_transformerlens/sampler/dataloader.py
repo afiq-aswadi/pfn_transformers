@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pickle
+import warnings
 from typing import TYPE_CHECKING
 
 import torch
@@ -13,6 +15,23 @@ from .sampler import Sampler
 
 if TYPE_CHECKING:
     from train import TrainingConfig
+
+
+def _collate_batch(batch):
+    """Stack batch elements while handling None inputs for unsupervised data."""
+    xs, ys = zip(*batch)
+    if xs[0] is None:
+        return None, torch.stack(ys)
+    return torch.stack(xs), torch.stack(ys)
+
+
+def _is_picklable(obj) -> bool:
+    """Lightweight check for whether an object can be pickled for worker processes."""
+    try:
+        pickle.dumps(obj)
+        return True
+    except Exception:
+        return False
 
 
 def build_dataloader(
@@ -35,21 +54,41 @@ def build_dataloader(
         internal_batch_size=training_config.batch_size,
     )
 
-    # Inline collate function to handle None x values for unsupervised learning
-    def collate_fn(batch):
-        xs, ys = zip(*batch)
-        if xs[0] is None:
-            return None, torch.stack(ys)
-        else:
-            return torch.stack(xs), torch.stack(ys)
-
     num_workers = training_config.num_workers
+    pin_memory = training_config.pin_memory
+    collate_fn = _collate_batch
+
+    # If the generator contains lambdas/locals (common in notebooks), it cannot be pickled.
+    if num_workers > 0 and not _is_picklable(sampler):
+        warnings.warn(
+            "Data generator is not picklable (e.g., lambda defined in a notebook). "
+            "Falling back to num_workers=0; define the generator at module scope or "
+            "set TrainingConfig.num_workers=0 to silence this.",
+            stacklevel=2,
+        )
+        num_workers = 0
+
+    # pin_memory only makes sense for CPU tensors being moved to GPU.
+    if pin_memory:
+        gen_device = getattr(sampler.generator, "device", None)
+        try:
+            gen_device = torch.device(gen_device) if gen_device is not None else None
+        except (TypeError, ValueError):
+            gen_device = None
+        if gen_device is not None and gen_device.type != "cpu":
+            warnings.warn(
+                "pin_memory=True but data generator outputs CUDA tensors; "
+                "disabling pin_memory to avoid errors.",
+                stacklevel=2,
+            )
+            pin_memory = False
+
     dataloader_kwargs = dict(
         batch_size=training_config.batch_size,
         shuffle=False,
         collate_fn=collate_fn,
         num_workers=num_workers,
-        pin_memory=training_config.pin_memory,
+        pin_memory=pin_memory,
     )
 
     if num_workers > 0:

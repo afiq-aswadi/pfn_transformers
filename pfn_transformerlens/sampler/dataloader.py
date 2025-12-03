@@ -43,12 +43,21 @@ def build_dataloader(
         else:
             return torch.stack(xs), torch.stack(ys)
 
-    return DataLoader(
-        sampler,
+    num_workers = training_config.num_workers
+    dataloader_kwargs = dict(
+        dataset=sampler,
         batch_size=training_config.batch_size,
         shuffle=False,
         collate_fn=collate_fn,
+        num_workers=num_workers,
+        pin_memory=training_config.pin_memory,
     )
+
+    if num_workers > 0:
+        dataloader_kwargs["prefetch_factor"] = training_config.prefetch_factor
+        dataloader_kwargs["persistent_workers"] = training_config.persistent_workers
+
+    return DataLoader(**dataloader_kwargs)
 
 
 def sample_batch(

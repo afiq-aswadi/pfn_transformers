@@ -311,6 +311,9 @@ class DeterministicFunctionGenerator:
     ) -> tuple[Float[torch.Tensor, "seq input_dim"], Float[torch.Tensor, "seq"]]:
         theta = self.prior.sample()
         x = self.x_distribution.sample((seq_len, self.input_dim))
+        theta_device = getattr(theta, "device", None)
+        if isinstance(x, torch.Tensor) and theta_device is not None:
+            x = x.to(theta_device)
 
         y = self.function(x, theta)
 
@@ -333,6 +336,9 @@ class DeterministicFunctionGenerator:
         """
         params = self.prior.sample()
         x = self.x_distribution.sample((seq_len, self.input_dim))
+        theta_device = getattr(params, "device", None)
+        if isinstance(x, torch.Tensor) and theta_device is not None:
+            x = x.to(theta_device)
 
         y = self.function(x, params)
 

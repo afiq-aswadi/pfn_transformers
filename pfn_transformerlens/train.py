@@ -63,6 +63,7 @@ class TrainingConfig:
         warmup_steps: Linear LR warmup steps (only used if use_warmup=True).
         use_grad_clip: Whether to apply gradient clipping.
         grad_clip: Gradient clipping max norm (only used if use_grad_clip=True).
+        use_amp: Whether to use automatic mixed precision (bf16 on CUDA).
         log_every: Steps between progress logs (avg over window).
         log_distributional_mse: Whether to compute an approximate MSE metric when
             training density models (adds an argmax over buckets each step).
@@ -100,6 +101,7 @@ class TrainingConfig:
     warmup_steps: int = 500
     use_grad_clip: bool = True
     grad_clip: float = 1.0
+    use_amp: bool = False
     log_every: int = 100
     log_distributional_mse: bool = False
     save_checkpoint: bool = True
@@ -462,6 +464,13 @@ def train(
     mse_count = 0
     acc_count = 0
 
+    # Setup AMP (automatic mixed precision)
+    use_amp = training_config.use_amp and device == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    if use_amp:
+        pbar.write(f"Using AMP with dtype={amp_dtype}")
+
     # precompute checkpoint steps based on schedule
     if training_config.checkpoint_schedule == "logarithmic":
         checkpoint_steps_list = get_logarithmic_checkpoint_steps(
@@ -538,13 +547,14 @@ def train(
             x = x.to(device)
         y = y.to(device)
 
-        # Forward + backward
-        loss, metrics = compute_loss(
-            model,
-            x,
-            y,
-            log_distributional_mse=training_config.log_distributional_mse,
-        )
+        # Forward + backward (with optional AMP)
+        with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
+            loss, metrics = compute_loss(
+                model,
+                x,
+                y,
+                log_distributional_mse=training_config.log_distributional_mse,
+            )
 
         # log loss every step
         loss_value = metrics["loss"]
@@ -552,12 +562,14 @@ def train(
         logger.log({"loss": loss_value}, step)
 
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        scaler.scale(loss).backward()
         if training_config.use_grad_clip:
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(
                 model.parameters(), training_config.grad_clip
             )
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
         scheduler.step()
 
         # Get current LR for logging

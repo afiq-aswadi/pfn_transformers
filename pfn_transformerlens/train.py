@@ -622,6 +622,16 @@ def train(
             ckpt_dir.mkdir(parents=True, exist_ok=True)
             ckpt_path = ckpt_dir / f"checkpoint_step_{step + 1}.pt"
 
+            task_distribution = None
+            prior = getattr(data_generator, "prior", None)
+            tasks = getattr(prior, "tasks", None)
+            if tasks is not None:
+                task_distribution = {
+                    "tasks": tasks.detach().cpu(),
+                    "task_size": getattr(prior, "task_size", None),
+                    "num_tasks": getattr(prior, "num_tasks", None),
+                }
+
             # Create metadata
             metadata = CheckpointMetadata(
                 timestamp=datetime.now().isoformat(),
@@ -641,6 +651,7 @@ def train(
                 model_config=model_config,
                 training_config=training_config,
                 metadata=metadata,
+                task_distribution=task_distribution,
             )
             pbar.write(f"Saved checkpoint to {ckpt_path}")
             logger.log_checkpoint(ckpt_path, step + 1, metadata)

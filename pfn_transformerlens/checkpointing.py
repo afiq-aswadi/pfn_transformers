@@ -137,6 +137,7 @@ def save_checkpoint(
     training_config,  # TrainingConfig - avoid circular import
     metadata: CheckpointMetadata,
     scheduler_state: dict | None = None,
+    task_distribution: dict | None = None,
 ) -> None:
     """
     Save checkpoint with v2 format.
@@ -150,6 +151,7 @@ def save_checkpoint(
         training_config: Training configuration
         metadata: Checkpoint metadata with wandb/git info
         scheduler_state: Optional scheduler.state_dict()
+        task_distribution: Optional discrete prior info (e.g., {"tasks": tensor, ...})
     """
     checkpoint = {
         "checkpoint_version": 2,
@@ -168,6 +170,8 @@ def save_checkpoint(
     }
     if scheduler_state is not None:
         checkpoint["scheduler_state_dict"] = scheduler_state
+    if task_distribution is not None:
+        checkpoint["task_distribution"] = task_distribution
 
     torch.save(checkpoint, checkpoint_path)
 
@@ -216,6 +220,9 @@ def load_checkpoint(
     model = PFNModel(config).to(device_str)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
+    # attach task distribution if present for downstream use
+    if "task_distribution" in ckpt:
+        setattr(model, "task_distribution", ckpt["task_distribution"])
 
     optimizer_state = ckpt["optimizer_state_dict"] if load_optimizer else None
 

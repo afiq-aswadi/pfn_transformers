@@ -408,6 +408,10 @@ def train(
         Trained PFN model (BasePFN subclass).
     """
     device = training_config.get_device()
+    device_type = torch.device(device).type
+    autocast_enabled = device_type in {"cuda", "mps"}
+    autocast_device = device_type if autocast_enabled else "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=device_type == "cuda")
 
     # wandb logging
     logger = WandbLogger(training_config, model_config, data_config)
@@ -539,12 +543,13 @@ def train(
         y = y.to(device)
 
         # Forward + backward
-        loss, metrics = compute_loss(
-            model,
-            x,
-            y,
-            log_distributional_mse=training_config.log_distributional_mse,
-        )
+        with torch.autocast(device_type=autocast_device, enabled=autocast_enabled):
+            loss, metrics = compute_loss(
+                model,
+                x,
+                y,
+                log_distributional_mse=training_config.log_distributional_mse,
+            )
 
         # log loss every step
         loss_value = metrics["loss"]
@@ -552,12 +557,22 @@ def train(
         logger.log({"loss": loss_value}, step)
 
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        if training_config.use_grad_clip:
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(), training_config.grad_clip
-            )
-        optimizer.step()
+        if scaler.is_enabled():
+            scaler.scale(loss).backward()
+            if training_config.use_grad_clip:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), training_config.grad_clip
+                )
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            if training_config.use_grad_clip:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), training_config.grad_clip
+                )
+            optimizer.step()
         scheduler.step()
 
         # Get current LR for logging

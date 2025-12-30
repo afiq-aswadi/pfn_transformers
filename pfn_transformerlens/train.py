@@ -85,6 +85,7 @@ class TrainingConfig:
         wandb_log_model: Whether to upload checkpoints as wandb artifacts.
         wandb_tags: Optional list of tags for the wandb run.
         wandb_notes: Optional notes/description for the wandb run.
+        seed: Random seed for reproducibility. If None, no seed is set.
     """
 
     batch_size: int = 32
@@ -118,6 +119,7 @@ class TrainingConfig:
     wandb_log_model: bool = True
     wandb_tags: list[str] | None = None
     wandb_notes: str | None = None
+    seed: int | None = None
 
     def get_device(self) -> str:
         if self.device == "auto":
@@ -412,6 +414,12 @@ def train(
     autocast_enabled = device_type in {"cuda", "mps"}
     autocast_device = device_type if autocast_enabled else "cuda"
     scaler = torch.cuda.amp.GradScaler(enabled=device_type == "cuda")
+
+    # Set random seed for reproducibility
+    if training_config.seed is not None:
+        torch.manual_seed(training_config.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(training_config.seed)
 
     # wandb logging
     logger = WandbLogger(training_config, model_config, data_config)

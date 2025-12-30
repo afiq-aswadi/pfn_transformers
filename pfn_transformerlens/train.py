@@ -421,6 +421,12 @@ def train(
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(training_config.seed)
 
+    # Set random seed for reproducibility
+    if training_config.seed is not None:
+        torch.manual_seed(training_config.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(training_config.seed)
+
     # wandb logging
     logger = WandbLogger(training_config, model_config, data_config)
 

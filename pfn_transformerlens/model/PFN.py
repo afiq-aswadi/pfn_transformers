@@ -87,6 +87,67 @@ class BasePFN(nn.Module, ABC):
             self.transformer.W_pos.requires_grad = False
             self.transformer.W_pos.data.zero_()
 
+    def disable_positional_embeddings(self, new_n_ctx: int = 8192) -> None:
+        """Disable positional embeddings for unbounded sequence generation.
+
+        Call this after loading a checkpoint to allow rollout beyond n_ctx.
+        The model will no longer use position information.
+
+        Args:
+            new_n_ctx: New context length limit. The transformer uses this for
+                internal mask sizes. Default 8192 allows long rollouts.
+        """
+        self.config.use_pos_emb = False
+        self.transformer.W_pos.requires_grad = False
+        self.transformer.W_pos.data.zero_()
+        self._resize_context(new_n_ctx)
+
+    def _resize_context(self, new_n_ctx: int) -> None:
+        """Resize internal transformer buffers for new context length."""
+        self.transformer.cfg.n_ctx = new_n_ctx
+
+        # recreate causal mask buffers in each attention block
+        for block in self.transformer.blocks:
+            device = block.attn.mask.device
+            dtype = block.attn.mask.dtype
+            new_mask = torch.triu(
+                torch.ones((new_n_ctx, new_n_ctx), device=device, dtype=dtype),
+                diagonal=1,
+            ).bool()
+            block.attn.register_buffer("mask", new_mask, persistent=False)
+
+    def extend_positional_embeddings(self, new_n_ctx: int) -> None:
+        """Extend positional embeddings to support longer sequences.
+
+        Tiles the existing learned embeddings cyclically to fill the new length.
+        This preserves learned position patterns for models trained with pos embeds.
+
+        Args:
+            new_n_ctx: New context length (must be > current n_ctx)
+        """
+        if not self.config.use_pos_emb:
+            self._resize_context(new_n_ctx)
+            return
+
+        old_n_ctx = self.transformer.cfg.n_ctx
+        if new_n_ctx <= old_n_ctx:
+            return
+
+        old_W_pos = self.transformer.W_pos.data.clone()
+        old_requires_grad = self.transformer.W_pos.requires_grad
+
+        n_tiles = (new_n_ctx + old_n_ctx - 1) // old_n_ctx
+        tiled = old_W_pos.repeat(n_tiles, 1)[:new_n_ctx]
+
+        # W_pos is stored in pos_embed submodule
+        del self.transformer.pos_embed._parameters["W_pos"]
+        new_W_pos = nn.Parameter(tiled)
+        new_W_pos.requires_grad = old_requires_grad
+        self.transformer.pos_embed.register_parameter("W_pos", new_W_pos)
+        self.transformer.W_pos = new_W_pos
+
+        self._resize_context(new_n_ctx)
+
     def _setup_bucketizer(self) -> None:
         """Initialize bucketizer if needed for distribution predictions."""
         if isinstance(self.config, SupervisedRegressionPFNConfig):
@@ -935,7 +996,9 @@ class SupervisedPFN(BasePFN):
                 device=device,
                 dtype=x.dtype,
             )
-            xy_combined[:, :, :input_dim] = x.repeat_interleave(2, dim=1)  # x at ALL positions
+            xy_combined[:, :, :input_dim] = x.repeat_interleave(
+                2, dim=1
+            )  # x at ALL positions
             xy_combined[:, 1::2, -1] = y  # y only at odd positions
             hidden = self.input_proj(xy_combined)
         residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)

@@ -144,6 +144,7 @@ class BasePFN(nn.Module, ABC):
         new_W_pos = nn.Parameter(tiled)
         new_W_pos.requires_grad = old_requires_grad
         self.transformer.pos_embed.register_parameter("W_pos", new_W_pos)
+        self.transformer.W_pos = new_W_pos
 
         self._resize_context(new_n_ctx)
 

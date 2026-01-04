@@ -134,6 +134,7 @@ class BasePFN(nn.Module, ABC):
             return
 
         old_W_pos = self.transformer.W_pos.data.clone()
+        old_requires_grad = self.transformer.W_pos.requires_grad
 
         n_tiles = (new_n_ctx + old_n_ctx - 1) // old_n_ctx
         tiled = old_W_pos.repeat(n_tiles, 1)[:new_n_ctx]
@@ -141,7 +142,7 @@ class BasePFN(nn.Module, ABC):
         # W_pos is stored in pos_embed submodule
         del self.transformer.pos_embed._parameters["W_pos"]
         new_W_pos = nn.Parameter(tiled)
-        new_W_pos.requires_grad = False
+        new_W_pos.requires_grad = old_requires_grad
         self.transformer.pos_embed.register_parameter("W_pos", new_W_pos)
 
         self._resize_context(new_n_ctx)
@@ -994,7 +995,9 @@ class SupervisedPFN(BasePFN):
                 device=device,
                 dtype=x.dtype,
             )
-            xy_combined[:, :, :input_dim] = x.repeat_interleave(2, dim=1)  # x at ALL positions
+            xy_combined[:, :, :input_dim] = x.repeat_interleave(
+                2, dim=1
+            )  # x at ALL positions
             xy_combined[:, 1::2, -1] = y  # y only at odd positions
             hidden = self.input_proj(xy_combined)
         residual, shortformer_pos_embed = self._prepare_transformer_input(hidden)

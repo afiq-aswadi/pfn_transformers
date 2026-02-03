@@ -659,22 +659,22 @@ class SupervisedPFN(BasePFN):
         self,
         x_distribution: torch.distributions.Distribution,
         num_generate: int,
-        prompt_x: Float[torch.Tensor, "K_init input_dim"] | None = None,
-        prompt_y: Float[torch.Tensor, "K_init"] | None = None,
+        prompt_x: Float[torch.Tensor, "n_prompts K_init input_dim"] | None = None,
+        prompt_y: Float[torch.Tensor, "n_prompts K_init"] | None = None,
         sample: bool = True,
         temperature: float = 1.0,
         num_rollouts: int = 1,
     ) -> tuple[
-        Float[torch.Tensor, "total_len input_dim"]
-        | Float[torch.Tensor, "num_rollouts total_len input_dim"],
-        Float[torch.Tensor, "total_len"]
-        | Float[torch.Tensor, "num_rollouts total_len"],
+        Float[torch.Tensor, "n_prompts num_rollouts total_len input_dim"],
+        Float[torch.Tensor, "n_prompts num_rollouts total_len"],
     ]:
-        """Generate (x, y) pairs autoregressively with optional parallel rollouts.
+        """Generate (x, y) pairs autoregressively with parallel rollouts.
 
         The model generates y values conditioned on x, where x values are sampled from
         x_distribution and y values are predicted by the model. The model's own y
         predictions feed back into the context for future predictions.
+
+        Each prompt in the batch gets num_rollouts independent rollouts.
 
         Parameters
         ----------
@@ -682,11 +682,11 @@ class SupervisedPFN(BasePFN):
             Distribution to sample x values from.
         num_generate : int
             Number of new (x, y) pairs to generate per rollout.
-        prompt_x : Float[torch.Tensor, "K_init input_dim"] | None
-            Initial x context. If None, generation starts from scratch.
-            Single prompt is broadcast across all rollouts.
-        prompt_y : Float[torch.Tensor, "K_init"] | None
-            Initial y context. Must be provided if prompt_x is provided.
+        prompt_x : tensor or None
+            Initial x context with shape (n_prompts, K_init, input_dim).
+            If None, generation starts from scratch with n_prompts=1.
+        prompt_y : tensor or None
+            Initial y context with shape (n_prompts, K_init).
         sample : bool, default True
             Whether to sample from predicted distribution or take mode. For
             continuous distributions, sampling uses :meth:`Bucketizer.sample`
@@ -695,27 +695,18 @@ class SupervisedPFN(BasePFN):
         temperature : float, default 1.0
             Sampling temperature for distribution predictions.
         num_rollouts : int, default 1
-            Number of independent parallel rollouts to generate.
+            Number of independent parallel rollouts per prompt.
 
         Returns
         -------
         tuple of tensors
-            Generated (x, y) sequences including the prompt.
-            - If num_rollouts == 1: ((total_len, input_dim), (total_len,))
-            - If num_rollouts > 1: ((num_rollouts, total_len, input_dim), (num_rollouts, total_len))
-            total_len = K_init + num_generate
-
-        Raises
-        ------
-        ValueError
-            If temperature <= 0 or num_rollouts < 1.
-        AssertionError
-            If prompt_x and prompt_y have mismatched lengths.
+            (x_out, y_out) with shapes:
+            - x_out: (n_prompts, num_rollouts, total_len, input_dim)
+            - y_out: (n_prompts, num_rollouts, total_len)
+            where total_len = K_init + num_generate
         """
-        if temperature <= 0:
-            raise ValueError("temperature must be > 0")
-        if num_rollouts < 1:
-            raise ValueError("num_rollouts must be >= 1")
+        assert temperature > 0, "temperature must be > 0"
+        assert num_rollouts >= 1, "num_rollouts must be >= 1"
 
         was_training = self.training
         self.eval()
@@ -724,18 +715,22 @@ class SupervisedPFN(BasePFN):
 
         # initialize context with prompt or empty
         if prompt_x is not None and prompt_y is not None:
+            assert prompt_x.dim() == 3, f"prompt_x must be 3D, got {prompt_x.shape}"
+            assert prompt_y.dim() == 2, f"prompt_y must be 2D, got {prompt_y.shape}"
             assert prompt_x.shape[0] == prompt_y.shape[0], (
-                f"prompt_x and prompt_y must have same length, "
+                f"prompt_x and prompt_y must have same batch size, "
                 f"got {prompt_x.shape[0]} and {prompt_y.shape[0]}"
             )
-            # broadcast single prompt across all rollouts
-            x_context = (
-                prompt_x.to(device).unsqueeze(0).expand(num_rollouts, -1, -1)
-            )  # (num_rollouts, K_init, input_dim)
-            y_context = (
-                prompt_y.to(device).unsqueeze(0).expand(num_rollouts, -1)
-            )  # (num_rollouts, K_init)
+            assert prompt_x.shape[1] == prompt_y.shape[1], (
+                f"prompt_x and prompt_y must have same sequence length, "
+                f"got {prompt_x.shape[1]} and {prompt_y.shape[1]}"
+            )
+            n_prompts = prompt_x.shape[0]
+            # tile each prompt for its rollouts: (n_prompts * num_rollouts, K_init, input_dim)
+            x_context = prompt_x.to(device).repeat_interleave(num_rollouts, dim=0)
+            y_context = prompt_y.to(device).repeat_interleave(num_rollouts, dim=0)
         elif prompt_x is None and prompt_y is None:
+            n_prompts = 1
             x_context = torch.empty(
                 num_rollouts, 0, self.config.input_dim, device=device
             )
@@ -743,26 +738,28 @@ class SupervisedPFN(BasePFN):
         else:
             raise ValueError("Both prompt_x and prompt_y must be provided or both None")
 
+        total_rollouts = n_prompts * num_rollouts
+
         # generate num_generate new pairs
         for _ in range(num_generate):
             # sample new x for each rollout
-            x_new = x_distribution.sample((num_rollouts, 1, self.config.input_dim)).to(
-                device
-            )
+            x_new = x_distribution.sample(
+                (total_rollouts, 1, self.config.input_dim)
+            ).to(device)
 
             # build current context: all previous (x,y) pairs + new x
             x_full = torch.cat(
                 [x_context, x_new], dim=1
-            )  # (num_rollouts, seq+1, input_dim)
+            )  # (total_rollouts, seq+1, input_dim)
 
             # for prediction, we need a y placeholder at the last position
-            y_dummy = torch.zeros(num_rollouts, 1, device=device)
-            y_full = torch.cat([y_context, y_dummy], dim=1)  # (num_rollouts, seq+1)
+            y_dummy = torch.zeros(total_rollouts, 1, device=device)
+            y_full = torch.cat([y_context, y_dummy], dim=1)  # (total_rollouts, seq+1)
 
-            logits = self(x_full, y_full)  # (num_rollouts, seq+1, d_vocab)
+            logits = self(x_full, y_full)  # (total_rollouts, seq+1, d_vocab)
 
             # get prediction for the last position
-            logits_last = logits[:, -1, :]  # (num_rollouts, d_vocab)
+            logits_last = logits[:, -1, :]  # (total_rollouts, d_vocab)
 
             # sample or take mode based on prediction type
             if isinstance(self.config, ClassificationPFNConfig):
@@ -790,7 +787,7 @@ class SupervisedPFN(BasePFN):
                 # logits is actually the predicted value
                 y_new = logits_last[
                     :, 0
-                ]  # (num_rollouts,) point predictions have d_vocab=1
+                ]  # (total_rollouts,) point predictions have d_vocab=1
 
             # add to context
             x_context = torch.cat([x_context, x_new], dim=1)
@@ -805,11 +802,11 @@ class SupervisedPFN(BasePFN):
         if was_training:
             self.train()
 
-        # backward compatibility: return single rollout shapes
-        if num_rollouts == 1:
-            return x_context[0], y_context[0]
-
-        return x_context, y_context
+        # reshape to (n_prompts, num_rollouts, total_len, ...)
+        total_len = x_context.shape[1]
+        x_out = x_context.view(n_prompts, num_rollouts, total_len, -1)
+        y_out = y_context.view(n_prompts, num_rollouts, total_len)
+        return x_out, y_out
 
     @torch.no_grad()
     def predict_on_prompt(

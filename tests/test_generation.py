@@ -58,8 +58,9 @@ class TestSupervisedGeneration:
             temperature=1.0,
         )
 
-        assert x_gen.shape == (num_generate, 2)
-        assert y_gen.shape == (num_generate,)
+        # output is (n_prompts=1, num_rollouts=1, total_len, input_dim)
+        assert x_gen.shape == (1, 1, num_generate, 2)
+        assert y_gen.shape == (1, 1, num_generate)
 
     def test_generation_output_shapes_with_prompt(self) -> None:
         """Test generation with initial prompt context."""
@@ -83,8 +84,9 @@ class TestSupervisedGeneration:
 
         K_init = 5
         num_generate = 10
-        prompt_x = torch.randn(K_init, 2, device=device)
-        prompt_y = torch.randn(K_init, device=device)
+        # prompts must be 3D: (n_prompts, K_init, input_dim)
+        prompt_x = torch.randn(1, K_init, 2, device=device)
+        prompt_y = torch.randn(1, K_init, device=device)
 
         x_distribution = Normal(0.0, 1.0)
 
@@ -97,12 +99,13 @@ class TestSupervisedGeneration:
             temperature=1.0,
         )
 
-        assert x_gen.shape == (K_init + num_generate, 2)
-        assert y_gen.shape == (K_init + num_generate,)
+        # output: (n_prompts=1, num_rollouts=1, total_len, input_dim)
+        assert x_gen.shape == (1, 1, K_init + num_generate, 2)
+        assert y_gen.shape == (1, 1, K_init + num_generate)
 
         # check that prompt is preserved at the beginning
-        assert torch.allclose(x_gen[:K_init], prompt_x)
-        assert torch.allclose(y_gen[:K_init], prompt_y)
+        assert torch.allclose(x_gen[0, 0, :K_init], prompt_x[0])
+        assert torch.allclose(y_gen[0, 0, :K_init], prompt_y[0])
 
     def test_generation_with_distribution_prediction(self) -> None:
         """Test generation with distribution predictions (bucketing)."""
@@ -133,8 +136,9 @@ class TestSupervisedGeneration:
             temperature=1.0,
         )
 
-        assert x_gen.shape == (num_generate, 1)
-        assert y_gen.shape == (num_generate,)
+        # output: (n_prompts=1, num_rollouts=1, total_len, input_dim)
+        assert x_gen.shape == (1, 1, num_generate, 1)
+        assert y_gen.shape == (1, 1, num_generate)
         # generated y values should be approximately within bucket range
         # allow small tolerance for bucket decoding edge cases
         assert torch.all((y_gen >= -2.1) & (y_gen <= 2.1))
@@ -168,7 +172,8 @@ class TestSupervisedGeneration:
             temperature=1.0,
         )
 
-        assert y_gen.shape == (num_generate,)
+        # output: (n_prompts=1, num_rollouts=1, total_len)
+        assert y_gen.shape == (1, 1, num_generate)
         assert torch.all(torch.isfinite(y_gen))
 
     def test_generation_with_riemann_buckets_bounded(self) -> None:
@@ -201,7 +206,8 @@ class TestSupervisedGeneration:
             temperature=1.0,
         )
 
-        assert y_gen.shape == (num_generate,)
+        # output: (n_prompts=1, num_rollouts=1, total_len)
+        assert y_gen.shape == (1, 1, num_generate)
         assert torch.all(torch.isfinite(y_gen))
         assert y_gen.min() >= borders.min()
         assert y_gen.max() <= borders.max()
@@ -236,7 +242,8 @@ class TestSupervisedGeneration:
             temperature=1.0,
         )
 
-        assert y_gen.shape == (num_generate,)
+        # output: (n_prompts=1, num_rollouts=1, total_len)
+        assert y_gen.shape == (1, 1, num_generate)
         assert torch.all(torch.isfinite(y_gen))
 
     def test_generation_with_point_prediction(self) -> None:
@@ -264,8 +271,9 @@ class TestSupervisedGeneration:
             temperature=1.0,
         )
 
-        assert x_gen.shape == (num_generate, 1)
-        assert y_gen.shape == (num_generate,)
+        # output: (n_prompts=1, num_rollouts=1, total_len, input_dim)
+        assert x_gen.shape == (1, 1, num_generate, 1)
+        assert y_gen.shape == (1, 1, num_generate)
         assert torch.all(torch.isfinite(y_gen))
 
     def test_generation_with_classification(self) -> None:
@@ -293,8 +301,9 @@ class TestSupervisedGeneration:
             temperature=1.0,
         )
 
-        assert x_gen.shape == (num_generate, 2)
-        assert y_gen.shape == (num_generate,)
+        # output: (n_prompts=1, num_rollouts=1, total_len, input_dim)
+        assert x_gen.shape == (1, 1, num_generate, 2)
+        assert y_gen.shape == (1, 1, num_generate)
         # generated classes should be valid values in [0, num_classes)
         assert torch.all(y_gen >= 0)
         assert torch.all(y_gen < 3)
@@ -343,7 +352,7 @@ class TestSupervisedGeneration:
 
         # generate with mode (should be deterministic given same x)
         torch.manual_seed(44)
-        x_gen, y_mode = model.generate(
+        _, _ = model.generate(
             x_distribution=x_distribution,
             num_generate=num_generate,
             sample=False,
@@ -351,7 +360,8 @@ class TestSupervisedGeneration:
         )
 
         # sampling should produce different results
-        assert not torch.allclose(y_sampled_1, y_sampled_2)
+        # flatten to compare since output is 4D
+        assert not torch.allclose(y_sampled_1.flatten(), y_sampled_2.flatten())
 
     def test_temperature_effect_on_sampling(self) -> None:
         """Test that temperature affects sampling diversity."""
@@ -393,8 +403,8 @@ class TestSupervisedGeneration:
             temperature=0.1,
         )
 
-        # high temp should have higher variance
-        assert y_high_temp.var() >= y_low_temp.var()
+        # high temp should have higher variance (flatten to 1D for comparison)
+        assert y_high_temp.flatten().var() >= y_low_temp.flatten().var()
 
     def test_generated_values_on_device(self) -> None:
         """Test that generated values are on the correct device."""
@@ -442,8 +452,9 @@ class TestSupervisedGeneration:
         device = next(model.parameters()).device
 
         K_init = 3
-        prompt_x = torch.randn(K_init, 1, device=device)
-        prompt_y = torch.randn(K_init, device=device)
+        # prompts must be 3D: (n_prompts, K_init, input_dim)
+        prompt_x = torch.randn(1, K_init, 1, device=device)
+        prompt_y = torch.randn(1, K_init, device=device)
 
         x_distribution = Normal(0.0, 1.0)
         num_generate = 7
@@ -455,13 +466,14 @@ class TestSupervisedGeneration:
             prompt_y=prompt_y,
         )
 
+        # output: (n_prompts=1, num_rollouts=1, total_len, input_dim)
         # first K_init should match prompt exactly
-        assert torch.allclose(x_gen[:K_init], prompt_x)
-        assert torch.allclose(y_gen[:K_init], prompt_y)
+        assert torch.allclose(x_gen[0, 0, :K_init], prompt_x[0])
+        assert torch.allclose(y_gen[0, 0, :K_init], prompt_y[0])
 
         # remaining should be newly generated
-        assert x_gen.shape[0] == K_init + num_generate
-        assert y_gen.shape[0] == K_init + num_generate
+        assert x_gen.shape[2] == K_init + num_generate
+        assert y_gen.shape[2] == K_init + num_generate
 
 
 class TestUnsupervisedGeneration:
@@ -762,8 +774,9 @@ class TestGenerationEdgeCases:
         device = next(model.parameters()).device
 
         K_init = 3
-        prompt_x = torch.randn(K_init, 1, device=device)
-        prompt_y = torch.randn(K_init, device=device)
+        # prompts must be 3D: (n_prompts, K_init, input_dim)
+        prompt_x = torch.randn(1, K_init, 1, device=device)
+        prompt_y = torch.randn(1, K_init, device=device)
 
         x_distribution = Normal(0.0, 1.0)
 
@@ -774,10 +787,11 @@ class TestGenerationEdgeCases:
             prompt_y=prompt_y,
         )
 
-        assert x_gen.shape == (K_init, 1)
-        assert y_gen.shape == (K_init,)
-        assert torch.allclose(x_gen, prompt_x)
-        assert torch.allclose(y_gen, prompt_y)
+        # output: (n_prompts=1, num_rollouts=1, total_len, input_dim)
+        assert x_gen.shape == (1, 1, K_init, 1)
+        assert y_gen.shape == (1, 1, K_init)
+        assert torch.allclose(x_gen[0, 0], prompt_x[0])
+        assert torch.allclose(y_gen[0, 0], prompt_y[0])
 
     def test_generate_one_step(self) -> None:
         """Test generating exactly one step."""
@@ -801,8 +815,9 @@ class TestGenerationEdgeCases:
             num_generate=1,
         )
 
-        assert x_gen.shape == (1, 1)
-        assert y_gen.shape == (1,)
+        # output: (n_prompts=1, num_rollouts=1, total_len, input_dim)
+        assert x_gen.shape == (1, 1, 1, 1)
+        assert y_gen.shape == (1, 1, 1)
 
     def test_unsupervised_generate_zero_returns_prompt(self) -> None:
         """Test unsupervised generation with 0 steps."""
@@ -842,9 +857,9 @@ class TestGenerationEdgeCases:
         model = PFNModel(config)
         device = next(model.parameters()).device
 
-        # mismatched sequence lengths
-        prompt_x = torch.randn(3, 1, device=device)
-        prompt_y = torch.randn(5, device=device)  # different length!
+        # mismatched sequence lengths (must be 3D for new API)
+        prompt_x = torch.randn(1, 3, 1, device=device)
+        prompt_y = torch.randn(1, 5, device=device)  # different length!
 
         x_distribution = Normal(0.0, 1.0)
 
@@ -877,14 +892,14 @@ class TestGenerationEdgeCases:
 
         x_distribution = Normal(0.0, 1.0)
 
-        with pytest.raises(ValueError, match="temperature must be"):
+        with pytest.raises(AssertionError, match="temperature must be"):
             model.generate(
                 x_distribution=x_distribution,
                 num_generate=5,
                 temperature=0.0,
             )
 
-        with pytest.raises(ValueError, match="temperature must be"):
+        with pytest.raises(AssertionError, match="temperature must be"):
             model.generate(
                 x_distribution=x_distribution,
                 num_generate=5,

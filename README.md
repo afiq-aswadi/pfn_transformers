@@ -1,3 +1,23 @@
+# Retrospective
+This library is primarily intended for my own research with PFNs, and is meant to be a library to train classes of transformers on synthetic data generators. I intended to use this project as a way to learn high-level software engineering skills. This was also around when agentic coding tools (Codex, Claude Code) became more widespread, so I wanted to use this library as a way to develop my own workflow when it comes to writing research code.
+
+Overall I'm pretty happy with what I learned, and I feel I got what I wanted out of developing this library. Some things I learned include:
+- Using git issues and pull requests. When I want to work on a feature that seems to have a wide scope, I draft an issue with CC. I then use the issue to plan (and implement) the implementation. I have Codex review setup to review any pull request.
+- Basic test-driven development: for particularly technical implementations I had CC implement tests to check if implementations were correct.
+- General git/version control, basic OOP.
+- Using linters and type checkers (though I'm unsure if I'll continue using these, especially in collaborative projects)
+
+Some major mistakes I made and learned from:
+- Scope creep was a major issue for me. I may have been overambitious with what I wanted this library to be able to do, which led to unecessary abstractions. The YAGNI principle probably holds here. 
+- Certain parts of the codebase became a black box for me, especially when I started dealing with libraries I wasn't familiar with. I fell into a bad habit of copy and pasting issues raised by Codex review, expecting CC to fix the problem without actually looking at the code myself. This meant I didn't have a deep understanding of the codebase, and this made it difficult for me to iterate. I should note that I think it's fine to have certain parts of a codebase be a black box (e.g:scripts to set up training sweeps from a yaml file, or plotting scripts), but I should definitely be more aware of what parts of the codebase I want to deeply understand.  
+- Not thinking about the simplest possible solution. For instance, I tried setting up weird infra to download/upload checkpoints from wandb to run experiments, when setting up cloud storage probably would have been a simpler solution.  
+
+Some things I can do better:
+- Actually reading code AI writes and trying to understand what's going on (and using this as a learning tool to learn libraries I'm not familiar with!). 
+- Being more opinionated with how code should look like. It's not just about writing code that runs. Though this will probably take time for me to develop that 'taste' of what good code looks like.
+
+*The documentation below was written by AI.*
+
 # PFN TransformerLens
 
 Library for training Prior-Fitted Networks (PFN) with transformer-lens.

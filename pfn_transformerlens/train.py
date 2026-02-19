@@ -16,6 +16,7 @@ For training w/ multiple GPUs, just use simple-gpu-scheduler (https://pypi.org/p
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,7 @@ class TrainingConfig:
         wandb_log_model: Whether to upload checkpoints as wandb artifacts.
         wandb_tags: Optional list of tags for the wandb run.
         wandb_notes: Optional notes/description for the wandb run.
+        log_file: Path to write JSON metrics log. If None, no file is written.
         seed: Random seed for reproducibility. If None, no seed is set.
     """
 
@@ -119,6 +121,7 @@ class TrainingConfig:
     wandb_log_model: bool = True
     wandb_tags: list[str] | None = None
     wandb_notes: str | None = None
+    log_file: str | None = None
     seed: int | None = None
 
     def get_device(self) -> str:
@@ -472,6 +475,8 @@ def train(
             scheduler.load_state_dict(state["scheduler_state_dict"])
         start_step = int(state.get("step", 0))
 
+    metrics_log: list[dict[str, float | int]] = []
+
     model.train()
     pbar = tqdm(range(start_step, training_config.num_steps), desc="Training")
     run_loss = 0.0
@@ -630,6 +635,11 @@ def train(
             pbar.set_postfix(postfix)
             logger.log(wandb_metrics, step + 1)
 
+            if training_config.log_file is not None:
+                log_entry: dict[str, float | int] = {"step": step + 1}
+                log_entry.update(wandb_metrics)
+                metrics_log.append(log_entry)
+
             run_loss = 0.0
             run_mse = 0.0
             run_acc = 0.0
@@ -705,17 +715,37 @@ def train(
                 log_distributional_mse=training_config.log_distributional_mse,
             )
 
-            # Format and display eval metrics
+            # Format and display eval metrics (skip non-numeric values like loss_type)
             eval_str = "Eval: " + ", ".join(
-                f"{key}={value:.4f}" for key, value in eval_metrics.items()
+                f"{key}={value:.4f}"
+                for key, value in eval_metrics.items()
+                if isinstance(value, (int, float))
             )
             pbar.write(eval_str)
 
-            # log to wandb with eval/ prefix
+            # log to wandb with eval/ prefix (skip non-numeric values like loss_type)
             wandb_eval_metrics = {
-                f"eval/{key}": value for key, value in eval_metrics.items()
+                f"eval/{key}": value
+                for key, value in eval_metrics.items()
+                if isinstance(value, (int, float))
             }
             logger.log(wandb_eval_metrics, step + 1)
+
+            if training_config.log_file is not None:
+                # merge eval metrics into the last log entry if same step, else append new
+                if metrics_log and metrics_log[-1]["step"] == step + 1:
+                    metrics_log[-1].update(wandb_eval_metrics)
+                else:
+                    log_entry = {"step": step + 1}
+                    log_entry.update(wandb_eval_metrics)
+                    metrics_log.append(log_entry)
+
+    if training_config.log_file is not None:
+        log_path = Path(training_config.log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "w") as f:
+            json.dump(metrics_log, f, indent=2)
+        pbar.write(f"Saved metrics log to {log_path}")
 
     logger.finish()
     return model

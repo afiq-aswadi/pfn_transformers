@@ -188,31 +188,24 @@ class Bucketizer(nn.Module):
         return reps[bucket_indices]
 
     def bucket_representatives(self) -> Float[Tensor, "num_buckets"]:
-        """Get representative values for each bucket.
+        """Get representative values (means) for each bucket.
 
         For bounded support, returns bucket midpoints. For unbounded support,
-        returns modes: interior bucket midpoints, but edge bucket modes at the
-        inner boundary (where the half-normal distribution peaks).
+        interior buckets use midpoints and edge buckets use half-normal means.
 
         Returns:
-            Representative values for each bucket.
+            Bucket means for each bucket.
             - Bounded: All buckets use midpoints
-            - Unbounded: Interior buckets use midpoints, edge buckets use modes
-              (borders[1] for left edge, borders[-2] for right edge)
-
-        Notes:
-            For sampling from the full distribution, use `sample()` which uses
-            inverse CDF sampling (uniform within interior buckets, half-normal
-            for edge buckets in unbounded mode).
+            - Unbounded: Interior buckets use midpoints, edge buckets use
+              half-normal means (shifted outward from the inner boundary)
         """
         mids = self.borders[:-1] + 0.5 * self.bucket_widths
 
         if self.bucket_support == "unbounded":
-            # edge buckets use modes (peak of half-normal at inner boundary)
-            modes = mids.clone()
-            modes[0] = self.borders[1]  # left edge: mode at right boundary
-            modes[-1] = self.borders[-2]  # right edge: mode at left boundary
-            return modes
+            means = mids.clone()
+            means[0] = self._left_edge_bucket_mean()
+            means[-1] = self._right_edge_bucket_mean()
+            return means
 
         return mids
 

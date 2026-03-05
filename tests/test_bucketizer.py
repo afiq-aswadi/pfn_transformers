@@ -47,15 +47,17 @@ def test_uniform_bucket_mapping_midpoints() -> None:
     assert torch.allclose(decoded, expected[[0, 1, 1, 3]])
 
 
-def test_unbounded_bucket_representatives_are_modes() -> None:
-    # For unbounded support, edge buckets use modes (at inner boundary)
+def test_unbounded_bucket_representatives_are_means() -> None:
+    # For unbounded support, edge buckets use half-normal means
     # while interior buckets use midpoints
     bucketizer = build_uniform_bucketizer("unbounded")
     reps = bucketizer.bucket_representatives()
 
-    # edge buckets should be modes at inner boundaries
-    assert torch.isclose(reps[0], bucketizer.borders[1])
-    assert torch.isclose(reps[-1], bucketizer.borders[-2])
+    # edge buckets should be half-normal means (shifted outward from inner boundary)
+    assert reps[0] < bucketizer.borders[1]
+    assert reps[-1] > bucketizer.borders[-2]
+    assert torch.isclose(reps[0], bucketizer._left_edge_bucket_mean())
+    assert torch.isclose(reps[-1], bucketizer._right_edge_bucket_mean())
 
     # interior buckets should be midpoints
     expected_mids = bucketizer.borders[1:-2] + 0.5 * bucketizer.bucket_widths[1:-1]

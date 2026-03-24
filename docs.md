@@ -1,939 +1,545 @@
-# pfn_transformers: AI-Optimized Documentation
+# pfn-transformerlens API Reference
 
-**Version:** 0.1.0
-**Purpose:** Training Prior-Fitted Networks (PFNs) for in-context Bayesian inference
+> AI-generated. This file is intended for AI consumption (coding agents, RAG, etc.).
+
+**Package:** `pfn_transformerlens`
+**Purpose:** Train Prior-Fitted Networks (PFNs) -- transformers that perform in-context Bayesian inference without parameter updates. Built on TransformerLens.
 
 ---
 
-## Quick Start
+## Top-Level Imports
 
 ```python
-# Clean, intuitive imports
-from pfn_transformers import (
-    train, TrainingConfig,
-    RegressionConfig,
-    DeterministicGenerator,
-    sample_batch,
+from pfn_transformerlens import (
+    # training
+    train, TrainingConfig, WandbLogger,
+    # model factory
+    PFN,
+    # configs
+    RegressionConfig, ClassificationConfig, UnsupervisedConfig,
+    # generators
+    DeterministicGenerator, BayesianGenerator, DatasetGenerator, UnsupervisedBayesian,
+    # bayesian primitives
+    Prior, Likelihood, DiscreteTask,
+    # utilities
+    sample_batch, estimate_riemann_borders,
+    # submodules
+    checkpointing, wandb_utils, generators, configs, bayes,
 )
-
-# That's it! Everything you need in one line.
 ```
 
----
+Short-name aliases for submodule imports:
 
-## What is pfn_transformers?
-
-A PyTorch library for training **Prior-Fitted Networks (PFNs)** - transformers that perform **in-context Bayesian inference** without parameter updates.
-
-**Use cases:**
-- Supervised learning: regression, classification
-- Unsupervised learning: next-token prediction
-- Probabilistic predictions with uncertainty
-- Few-shot learning via in-context examples
-
-**Key features:**
-- Clean API with intuitive naming
-- Flexible data generation (Bayesian, deterministic, datasets)
-- Distribution or point predictions
-- Full W&B integration for reproducibility
-- Built on TransformerLens for interpretability
-
----
-
-## Installation
-
-```bash
-# From git
-pip install git+https://github.com/yourusername/pfn_transformers.git
-
-# Local + W&B
-uv sync --extra wandb
+```python
+from pfn_transformerlens.generators import Deterministic, Bayesian, Dataset, UnsupervisedBayesian
+from pfn_transformerlens.configs import Regression, Classification, Unsupervised
+from pfn_transformerlens.bayes import Prior, Likelihood, DiscreteTask
 ```
 
 ---
 
-## Complete Workflow
+## Config Dataclasses
 
-### Step 1: Data Generator
+All configs inherit from `BasePFNConfig(HookedTransformerConfig)`, which adds:
 
-Choose how to generate training sequences:
+| Field | Type | Default |
+|-------|------|---------|
+| `input_dim` | `int` | `16` |
+| `use_pos_emb` | `bool` | `True` |
+| `normalization_type` | `str` | `"LN"` |
 
-#### Option A: Deterministic Functions
+Plus all `HookedTransformerConfig` fields: `d_model`, `n_layers`, `n_heads`, `d_head`, `d_vocab`, `act_fn`, etc.
 
-```python
-from pfn_transformers import DeterministicGenerator
-import torch
+### RegressionConfig (`SupervisedRegressionPFNConfig`)
 
-# Define function
-def my_function(x, params):
-    w, b = params
-    return (w * x).sum(dim=-1) + b
+| Field | Type | Default |
+|-------|------|---------|
+| `mask_type` | `Literal["autoregressive-pfn", "gpt2"]` | `"autoregressive-pfn"` |
+| `prediction_type` | `Literal["distribution", "point"]` | `"distribution"` |
+| `bucket_type` | `Literal["uniform", "riemann"] \| None` | `None` |
+| `bucket_support` | `Literal["unbounded", "bounded"]` | `"unbounded"` |
+| `y_min` | `float \| None` | `None` |
+| `y_max` | `float \| None` | `None` |
+| `riemann_borders` | `Tensor \| None` | `None` |
 
-# Define parameter prior
-prior = torch.distributions.Independent(
-    torch.distributions.Normal(
-        torch.tensor([0.0, 0.0]),
-        torch.tensor([1.0, 0.5])
-    ), 1
-)
+### ClassificationConfig (`ClassificationPFNConfig`)
 
-# Create generator
-data_gen = DeterministicGenerator(
-    prior=prior,
-    function=my_function,
-    input_dim=5,
-    noise_std=0.1,  # or None for noiseless
-)
+| Field | Type | Default |
+|-------|------|---------|
+| `num_classes` | `int` | `2` |
+| `y_type` | `Literal["continuous", "categorical"]` | `"continuous"` |
+| `mask_type` | `Literal["autoregressive-pfn", "gpt2"]` | `"autoregressive-pfn"` |
 
-x, y = data_gen.generate(seq_len=64)
-# x: [64, 5], y: [64]
-```
+### UnsupervisedConfig (`UnsupervisedPFNConfig`)
 
-#### Option B: Bayesian Prior + Likelihood
-
-```python
-from pfn_transformers import BayesianGenerator
-from pfn_transformers.bayes import Prior, Likelihood
-import torch
-
-# Prior over parameters
-prior = Prior(torch.distributions.Normal(0.0, 1.0))
-
-# Likelihood p(y | x, theta)
-def parameterizer(theta, x):
-    mean = (theta * x).sum(dim=-1)
-    return {"loc": mean, "scale": 0.1}
-
-likelihood = Likelihood(
-    distribution_class=torch.distributions.Normal,
-    parameterizer=parameterizer,
-    input_dim=10
-)
-
-data_gen = BayesianGenerator(prior=prior, likelihood=likelihood)
-x, y = data_gen.generate(seq_len=64)
-```
-
-#### Option C: Fixed Dataset
-
-```python
-from pfn_transformers import DatasetGenerator
-import torch
-
-x_data = torch.randn(1000, 10)  # [N, input_dim]
-y_data = torch.randn(1000)       # [N]
-
-data_gen = DatasetGenerator(
-    x_data=x_data,
-    y_data=y_data,
-    sequential=False  # False: random sampling, True: consecutive
-)
-```
-
-#### Option D: Unsupervised (no x values)
-
-```python
-from pfn_transformers import UnsupervisedBayesian
-from pfn_transformers.bayes import Prior, Likelihood
-
-prior = Prior(torch.distributions.Normal(0.0, 1.0))
-
-def parameterizer(theta, x):
-    # x is dummy [seq, 1]
-    seq_len = x.shape[0]
-    return {"loc": theta.expand(seq_len), "scale": 0.5}
-
-likelihood = Likelihood(
-    distribution_class=torch.distributions.Normal,
-    parameterizer=parameterizer,
-    input_dim=1  # dummy
-)
-
-data_gen = UnsupervisedBayesian(prior=prior, likelihood=likelihood)
-y = data_gen.generate(seq_len=64)  # [64]
-```
+| Field | Type | Default |
+|-------|------|---------|
+| `d_vocab` | `int` | `2` |
+| `input_type` | `Literal["discrete", "continuous"]` | `"discrete"` |
+| `prediction_type` | `Literal["point", "distribution"]` | `"distribution"` |
+| `bucket_type` | `Literal["uniform", "riemann"] \| None` | `None` |
+| `bucket_support` | `Literal["unbounded", "bounded"]` | `"unbounded"` |
+| `y_min` | `float \| None` | `None` |
+| `y_max` | `float \| None` | `None` |
+| `riemann_borders` | `Tensor \| None` | `None` |
+| `mask_type` | `Literal["gpt2"]` | `"gpt2"` (enforced) |
+| `act_fn` | `str` | `"gelu"` |
 
 ---
 
-### Step 2: Model Configuration
-
-#### Regression (Continuous Outputs)
+## TrainingConfig
 
 ```python
-from pfn_transformers import RegressionConfig
-
-# Point predictions (MSE loss)
-config = RegressionConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_dim=10,
-    prediction_type="point",
-)
-
-# Distribution predictions with uniform bucketing
-config = RegressionConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_dim=10,
-    prediction_type="distribution",
-    bucket_type="uniform",
-    d_vocab=100,  # number of buckets
-    y_min=-5.0,
-    y_max=5.0,
-)
-
-# Distribution with Riemann bucketing (quantile-based)
-from pfn_transformers import estimate_riemann_borders
-
-borders = estimate_riemann_borders(
-    torch.randn(10000),  # sample data
-    num_buckets=100
-)
-
-config = RegressionConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_dim=10,
-    prediction_type="distribution",
-    bucket_type="riemann",
-    d_vocab=100,
-    riemann_borders=borders,
-)
-```
-
-**Key parameters:**
-- `mask_type`: `"autoregressive-pfn"` (PFN attention) or `"gpt2"` (standard causal)
-- `bucket_support`: `"unbounded"` (uses padding) or `"bounded"` (hard boundaries)
-
-#### Classification (Discrete Outputs)
-
-```python
-from pfn_transformers import ClassificationConfig
-
-config = ClassificationConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_dim=10,
-    num_classes=5,
-)
-```
-
-#### Unsupervised (Next-Token Prediction)
-
-```python
-from pfn_transformers import UnsupervisedConfig
-
-# Discrete tokens (language modeling)
-config = UnsupervisedConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_type="discrete",
-    prediction_type="distribution",
-    d_vocab=1000,  # vocabulary size
-)
-
-# Continuous with point predictions
-config = UnsupervisedConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_type="continuous",
-    prediction_type="point",
-)
-
-# Continuous with distribution predictions
-config = UnsupervisedConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_type="continuous",
-    prediction_type="distribution",
-    bucket_type="uniform",
-    d_vocab=100,
-    y_min=-5.0,
-    y_max=5.0,
-)
-```
-
-**Note:** Unsupervised configs MUST use `mask_type="gpt2"` (enforced).
-
----
-
-### Step 3: Training
-
-```python
-from pfn_transformers import train, TrainingConfig
-
-training_config = TrainingConfig(
-    # Data
-    batch_size=32,
-    seq_len=64,
-
-    # Optimization
-    num_steps=10000,
-    learning_rate=1e-4,
-    weight_decay=1e-5,
-
-    # LR warmup
-    use_warmup=True,
-    warmup_steps=500,
-
-    # Gradient clipping
-    use_grad_clip=True,
-    grad_clip=1.0,
-
-    # Logging
-    log_every=100,
-
-    # Checkpoints
-    save_checkpoint=True,
-    save_every=1000,
-    checkpoint_dir="checkpoints",
-
-    # Device
-    device="auto",  # cuda > mps > cpu
-)
-
-# Train!
-model = train(data_gen, model_config, training_config)
-```
-
-**Optional: Evaluation during training**
-
-```python
-training_config = TrainingConfig(
-    # ... other params ...
-    eval_every=500,
-    eval_batches=20,
-)
-
-model = train(
-    data_gen,
-    model_config,
-    training_config,
-    eval_data_generator=eval_data_gen  # optional separate eval data
-)
-```
-
----
-
-### Step 4: W&B Integration
-
-#### Basic Usage
-
-```python
-from pfn_transformers import train, TrainingConfig
-
-training_config = TrainingConfig(
-    # ... other params ...
-    use_wandb=True,
-    wandb_project="my-project",  # or set WANDB_PROJECT env var
-    wandb_entity="myteam",       # or set WANDB_ENTITY env var
-    wandb_run_name="experiment-1",
-    wandb_tags=["regression", "v1"],
-    wandb_log_model=True,  # upload checkpoints
-)
-
-model = train(data_gen, model_config, training_config)
-```
-
-**What gets logged:**
-- Loss every step
-- Metrics (MSE, accuracy) every `log_every` steps
-- Checkpoints as artifacts: `checkpoint-{run_id}-step-{step}`
-- Full configs in artifact metadata
-
-#### Structured Run Names (for easy retrieval)
-
-```python
-from pfn_transformers.wandb import RunNameScheme, create_run_name
-from dataclasses import dataclass
-
-# Define data config
 @dataclass
-class MyDataConfig:
-    num_tasks: int = 100
-    input_dim: int = 10
+class TrainingConfig:
+    # data
+    batch_size: int = 32
+    seq_len: int = 64
+    num_workers: int = 0
+    pin_memory: bool = False
+    prefetch_factor: int = 2
+    persistent_workers: bool = False
 
-data_config = MyDataConfig()
+    # optimization
+    num_steps: int = 10000
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-5
+    use_warmup: bool = True
+    warmup_steps: int = 500
+    use_grad_clip: bool = True
+    grad_clip: float = 1.0
+    seed: int | None = None
 
-# Define naming scheme
-scheme = RunNameScheme.from_templates(
-    model={'n_layers': None, 'd_model': None},
-    data={'num_tasks': None, 'input_dim': None}
-)
+    # logging
+    log_every: int = 100
+    log_distributional_mse: bool = False
+    log_file: str | None = None
 
-# Create structured name
-run_name = create_run_name(
-    base="my-experiment",
-    model_config=model_config,
-    data_config=data_config,
-    scheme=scheme
-)
-# Result: "my-experiment-model-n_layers4-d_model128-data-num_tasks100-input_dim10"
+    # checkpointing
+    save_checkpoint: bool = True
+    checkpoint_schedule: str = "linear"        # "linear" or "logarithmic"
+    save_every: int = 1000
+    linear_checkpoint_interval: int = 100
+    n_log_checkpoints: int = 1000
+    checkpoint_dir: str = "checkpoints"
 
-# Train with structured naming
-training_config = TrainingConfig(
-    use_wandb=True,
-    wandb_run_name=run_name,
-)
+    # evaluation
+    eval_every: int | None = None
+    eval_batches: int = 10
 
-# IMPORTANT: pass data_config to train() for config-based loading
-model = train(data_gen, model_config, training_config, data_config=data_config)
+    # device
+    device: str = "auto"                       # "auto" -> cuda > mps > cpu
+
+    # wandb
+    use_wandb: bool = False
+    wandb_project: str | None = None
+    wandb_entity: str | None = None
+    wandb_run_name: str | None = None
+    wandb_log_model: bool = True
+    wandb_tags: list[str] | None = None
+    wandb_notes: str | None = None
+
+    def get_device(self) -> str
 ```
 
-#### Loading Models from W&B
+---
 
-**By Run ID (recommended):**
+## train()
 
 ```python
-from pfn_transformers.wandb import load_from_pretrained
-
-# Load latest checkpoint
-model, _, metadata = load_from_pretrained(
-    run_identifier="abc123",
-    project="my-project",
-)
-
-# Load specific step
-model, _, metadata = load_from_pretrained(
-    run_identifier="abc123",
-    checkpoint_step=5000,
-    project="my-project",
-)
-
-print(f"Loaded from: {metadata.wandb_run_url}")
+def train(
+    data_generator: DataGenerator,
+    model_config: BasePFNConfig,
+    training_config: TrainingConfig,
+    *,
+    resume_from: str | None = None,
+    eval_data_generator: DataGenerator | None = None,
+    data_config: Any = None,          # dataclass, logged to wandb
+) -> BasePFN
 ```
 
-**By Config Matching:**
+---
+
+## Data Generators
+
+Type alias: `DataGenerator = SupervisedDataGenerator | UnsupervisedDataGenerator`
+
+### DeterministicGenerator (`DeterministicFunctionGenerator`)
 
 ```python
-from pfn_transformers.wandb import load_by_config, RunNameScheme
-
-scheme = RunNameScheme.from_templates(
-    model={'n_layers': None, 'd_model': None},
-    data={'num_tasks': None}
-)
-
-model, _, metadata = load_by_config(
-    scheme=scheme,
-    n_layers=4,
-    d_model=128,
-    num_tasks=100,
-    checkpoint_step="latest",  # or "earliest" or int
-    project="my-project",
-)
+class DeterministicFunctionGenerator:
+    def __init__(
+        self,
+        prior: Distribution,
+        function: Callable[[Tensor, Any], Tensor],
+        input_dim: int,
+        noise_std: float | None = 0.0,
+        x_distribution: Distribution = Normal(0, 1),
+        device: str | torch.device | None = None,
+    )
+    def generate(self, seq_len: int) -> tuple[Tensor, Tensor]
+    def generate_with_params(self, seq_len: int) -> tuple[tuple[Tensor, Tensor], dict]
 ```
 
-#### Browse Available Models
+### BayesianGenerator (`SupervisedProbabilisticGenerator`)
 
 ```python
-from pfn_transformers.wandb import list_available_models, list_checkpoints
+class SupervisedProbabilisticGenerator:
+    def __init__(
+        self,
+        prior: PriorDistribution,
+        likelihood: LikelihoodDistribution,
+        x_distribution: Distribution | None = None,
+    )
+    def generate(self, seq_len: int) -> tuple[Tensor, Tensor]
+    def generate_with_params(self, seq_len: int) -> tuple[tuple[Tensor, Tensor], dict]
+```
 
-# List all models
-models = list_available_models(
-    project="my-project",
-    tags=["production"]  # optional
-)
+### DatasetGenerator (`FixedDatasetGenerator`)
 
-for m in models:
-    print(f"{m.run_name} (step {m.checkpoint_step})")
-    print(f"  URL: {m.run_url}")
+```python
+class FixedDatasetGenerator:
+    def __init__(
+        self,
+        x_data: Tensor,              # [N, input_dim]
+        y_data: Tensor,              # [N]
+        sequential: bool = False,
+    )
+    def generate(self, seq_len: int) -> tuple[Tensor, Tensor]
+```
 
-# List checkpoints for a run
-checkpoints = list_checkpoints("abc123", project="my-project")
-for c in checkpoints:
-    print(f"Step {c.step}: {c.artifact_name}")
+### UnsupervisedBayesian (`UnsupervisedProbabilisticGenerator`)
+
+```python
+class UnsupervisedProbabilisticGenerator:
+    def __init__(
+        self,
+        prior: PriorDistribution,
+        likelihood: LikelihoodDistribution,
+    )
+    def generate(self, seq_len: int) -> Tensor
+    def generate_with_params(self, seq_len: int) -> tuple[Tensor, dict]
+```
+
+### Bayesian Primitives
+
+```python
+class PriorDistribution(Distribution):
+    def __init__(self, base_distribution: Distribution)
+
+class LikelihoodDistribution(Distribution):
+    def __init__(
+        self,
+        base_distribution: Distribution,
+        parameterizer: Callable[[Tensor, Tensor], dict[str, Tensor]],
+        input_dim: int,
+    )
+
+class DiscreteTaskDistribution(Distribution):
+    def __init__(self, tasks: Tensor)
+```
+
+---
+
+## Model Classes
+
+### Factory
+
+```python
+def PFNModel(config: BasePFNConfig) -> BasePFN
+# aliased as PFN at top level
+```
+
+### BasePFN (abstract)
+
+```python
+class BasePFN(nn.Module, ABC):
+    transformer: HookedTransformer
+    config: BasePFNConfig
+
+    def get_bucket_values(self, y: Tensor) -> Tensor
+    def get_y_values(self, bucket_indices: Tensor) -> Tensor
+    def log_bucket_densities(self, logits: Tensor) -> Tensor
+    @property
+    def bucketizer(self) -> Bucketizer
+```
+
+### SupervisedPFN
+
+```python
+class SupervisedPFN(BasePFN):
+    config: SupervisedRegressionPFNConfig | ClassificationPFNConfig
+
+    def forward(
+        self,
+        x: Tensor,   # [batch, seq, input_dim]
+        y: Tensor,   # [batch, seq]
+        return_cache: bool = False,
+    ) -> Tensor | tuple[Tensor, ActivationCache]
+    # returns logits [batch, seq, d_vocab]
+
+    def predict_on_prompt(
+        self,
+        x: Tensor,   # [..., seq, input_dim]
+        y: Tensor,   # [..., seq]
+        *,
+        temperature: float = 1.0,
+        return_logits: bool = False,
+        return_cache: bool = False,
+    ) -> DistributionPrediction | PointPrediction | ClassificationPrediction
+
+    def generate(
+        self,
+        x_distribution: Distribution,
+        num_generate: int,
+        prompt_x: Tensor | None = None,
+        prompt_y: Tensor | None = None,
+        sample: bool = True,
+        temperature: float = 1.0,
+        num_rollouts: int = 1,
+    ) -> tuple[Tensor, Tensor]
+    # returns (x, y) for generated sequences
+```
+
+### UnsupervisedPFN
+
+```python
+class UnsupervisedPFN(BasePFN):
+    config: UnsupervisedPFNConfig
+
+    def forward(
+        self,
+        y: Tensor,   # [batch, seq]
+        return_cache: bool = False,
+    ) -> Tensor | tuple[Tensor, ActivationCache]
+    # returns logits [batch, seq, d_vocab]
+
+    def predict_on_prompt(
+        self,
+        y: Tensor,   # [..., seq]
+        *,
+        temperature: float = 1.0,
+        return_logits: bool = False,
+        return_cache: bool = False,
+    ) -> DistributionPrediction | PointPrediction
+
+    def generate(
+        self,
+        num_generate: int,
+        prompt: Tensor | None = None,
+        sample: bool = True,
+        temperature: float = 1.0,
+        num_rollouts: int = 1,
+    ) -> Tensor
+```
+
+---
+
+## Prediction Output Types
+
+```python
+@dataclass
+class DistributionPrediction:
+    probs: Tensor      # [..., seq, d_vocab]
+    y_grid: Tensor     # [d_vocab]
+    logits: Tensor | None = None
+
+@dataclass
+class PointPrediction:
+    preds: Tensor      # [..., seq, 1]
+
+@dataclass
+class ClassificationPrediction:
+    probs: Tensor      # [..., seq, num_classes]
+    logits: Tensor | None = None
+```
+
+---
+
+## Checkpointing
+
+```python
+from pfn_transformerlens.checkpointing import save_checkpoint, load_checkpoint, CheckpointMetadata
+
+@dataclass
+class CheckpointMetadata:
+    timestamp: str
+    wandb_run_id: str | None
+    wandb_run_name: str | None
+    wandb_run_url: str | None
+    git_hash: str | None
+
+def save_checkpoint(
+    checkpoint_path: Path,
+    step: int,
+    model_state: dict,
+    optimizer_state: dict,
+    model_config: BasePFNConfig,
+    training_config: TrainingConfig,
+    metadata: CheckpointMetadata,
+    scheduler_state: dict | None = None,
+    task_distribution: dict | None = None,
+) -> None
+
+def load_checkpoint(
+    checkpoint_path: Path | str,
+    device: str = "auto",
+    load_optimizer: bool = False,
+) -> tuple[BasePFN, dict | None, CheckpointMetadata]
+
+def get_logarithmic_checkpoint_steps(
+    training_steps: int,
+    n_log_checkpoints: int = 1000,
+    linear_interval: int = 100,
+) -> list[int]
+```
+
+---
+
+## wandb_utils
+
+Only contains run naming utilities. Model loading/listing functions have been removed.
+
+```python
+from pfn_transformerlens.wandb_utils import RunNameScheme, create_run_name
+
+@dataclass
+class RunNameScheme:
+    model_fields: tuple[str, ...] = ()
+    training_fields: tuple[str, ...] = ()
+    data_fields: tuple[str, ...] = ()
+
+    @classmethod
+    def from_templates(
+        cls,
+        model: Any | None = None,
+        training: Any | None = None,
+        data: Any | None = None,
+    ) -> RunNameScheme
+
+def create_run_name(
+    *,
+    base: str,
+    model_config: Any | None = None,
+    training_config: Any | None = None,
+    data_config: Any | None = None,
+    scheme: RunNameScheme | None = None,
+    include_fields: dict[str, Sequence[str]] | None = None,
+    extra: Mapping[str, Any] | None = None,
+    max_length: int = 128,
+) -> str
+```
+
+---
+
+## WandbLogger
+
+```python
+from pfn_transformerlens.wandb_logger import WandbLogger
+
+class WandbLogger:
+    def __init__(
+        self,
+        training_config: TrainingConfig,
+        model_config: BasePFNConfig,
+        data_config: Any = None,
+    )
+    def log(self, metrics: dict[str, float], step: int) -> None
+    def log_checkpoint(
+        self,
+        checkpoint_path: str | Path,
+        step: int,
+        metadata: CheckpointMetadata | None = None,
+    ) -> None
+    def finish(self) -> None
+
+    # properties set after init
+    enabled: bool
+    run_id: str | None
+    run_name: str | None
+    run_url: str | None
 ```
 
 ---
 
 ## Utilities
 
-### Sample Batch
+### sample_batch
 
 ```python
-from pfn_transformers import sample_batch
+from pfn_transformerlens.sampler.dataloader import sample_batch
 
-# Easy batching
-x, y = sample_batch(data_gen, batch_size=32, seq_len=64)
-# x: [32, 64, input_dim] or None (unsupervised)
-# y: [32, 64]
+def sample_batch(
+    data_generator: DataGenerator,
+    batch_size: int,
+    seq_len: int,
+) -> tuple[Tensor | None, Tensor]
+# returns (x, y) where x is None for unsupervised generators
 ```
 
-### Estimate Riemann Borders
+### estimate_riemann_borders
 
 ```python
-from pfn_transformers import estimate_riemann_borders
-import torch
+from pfn_transformerlens.model.bucketizer import estimate_riemann_borders
 
-# Sample from your data distribution
-sample_data = torch.randn(10000)
-
-# Estimate quantile-based bucket borders
-borders = estimate_riemann_borders(sample_data, num_buckets=100)
-# borders: [101] tensor with bucket boundaries
-```
-
-### Checkpointing
-
-```python
-from pfn_transformers import checkpointing
-
-# Save
-checkpointing.save_checkpoint(
-    checkpoint_path="model.pt",
-    step=10000,
-    model_state=model.state_dict(),
-    model_config=model_config,
-    training_config=training_config,
-)
-
-# Load
-model, opt_state, metadata = checkpointing.load_checkpoint(
-    checkpoint_path="model.pt",
-    device="auto",
-    load_optimizer=False,
-)
+def estimate_riemann_borders(
+    ys: Tensor,
+    *,
+    num_buckets: int,
+    widen_borders_factor: float = 1.0,
+) -> Tensor  # [num_buckets + 1]
 ```
 
 ---
 
-## Complete Examples
-
-### Example 1: Regression with Clean Imports
+## End-to-End Example
 
 ```python
-from pfn_transformers import (
-    train, TrainingConfig,
-    RegressionConfig,
-    DeterministicGenerator,
-)
 import torch
+from pfn_transformerlens import (
+    train, TrainingConfig, RegressionConfig, DeterministicGenerator,
+    estimate_riemann_borders, sample_batch,
+)
 
-# Data generator
+# 1. data generator
 def linear_fn(x, w):
     return (w * x).sum(dim=-1)
 
 data_gen = DeterministicGenerator(
     prior=torch.distributions.Normal(0.0, 1.0),
     function=linear_fn,
-    input_dim=10,
+    input_dim=5,
     noise_std=0.1,
 )
 
-# Model config
-model_config = RegressionConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_dim=10,
+# 2. estimate bucket borders from sample data
+_, sample_y = sample_batch(data_gen, batch_size=100, seq_len=64)
+borders = estimate_riemann_borders(sample_y.flatten(), num_buckets=100)
+
+# 3. model config
+model_cfg = RegressionConfig(
+    d_model=128, n_layers=4, n_heads=4, d_head=32,
+    input_dim=5,
     prediction_type="distribution",
-    bucket_type="uniform",
+    bucket_type="riemann",
     d_vocab=100,
-    y_min=-5.0,
-    y_max=5.0,
+    riemann_borders=borders,
 )
 
-# Training config
-training_config = TrainingConfig(
-    batch_size=32,
-    seq_len=64,
-    num_steps=10000,
-    use_wandb=True,
-    wandb_project="pfn-experiments",
+# 4. train
+train_cfg = TrainingConfig(
+    batch_size=32, seq_len=64, num_steps=5000,
+    use_wandb=False,
 )
+model = train(data_gen, model_cfg, train_cfg)
 
-# Train
-model = train(data_gen, model_config, training_config)
-
-# Inference
+# 5. inference
 device = next(model.parameters()).device
-x_test = torch.randn(1, 20, 10).to(device)
-y_test = torch.randn(1, 20).to(device)
-
-with torch.no_grad():
-    logits = model(x_test, y_test)
-    log_densities = model.bucketizer.log_bucket_densities(logits)
-    pred_buckets = log_densities.argmax(dim=-1)
-    pred_y = model.get_y_values(pred_buckets)
-```
-
-### Example 2: Classification
-
-```python
-from pfn_transformers import (
-    train, TrainingConfig,
-    ClassificationConfig,
-    DatasetGenerator,
+pred = model.predict_on_prompt(
+    x=torch.randn(1, 20, 5).to(device),
+    y=torch.randn(1, 20).to(device),
 )
-import torch
-
-# Data
-x_data = torch.randn(1000, 10)
-y_data = torch.randint(0, 3, (1000,))
-
-data_gen = DatasetGenerator(x_data, y_data)
-
-# Config
-config = ClassificationConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_dim=10,
-    num_classes=3,
-)
-
-# Train
-model = train(
-    data_gen,
-    config,
-    TrainingConfig(batch_size=32, seq_len=32, num_steps=5000),
-)
-
-# Inference
-x_test = torch.randn(1, 10, 10).to(device)
-y_test = torch.randint(0, 3, (1, 10)).to(device)
-
-with torch.no_grad():
-    logits = model(x_test, y_test)
-    predictions = logits.argmax(dim=-1)
-```
-
-### Example 3: Config-Based W&B Loading
-
-```python
-from pfn_transformers.wandb import RunNameScheme, create_run_name, load_by_config
-from pfn_transformers import train, TrainingConfig, RegressionConfig
-from dataclasses import dataclass
-
-# Data config
-@dataclass
-class DataConfig:
-    num_tasks: int = 50
-    input_dim: int = 10
-
-data_config = DataConfig()
-
-# Naming scheme
-scheme = RunNameScheme.from_templates(
-    model={'n_layers': None, 'd_model': None},
-    data={'num_tasks': None, 'input_dim': None}
-)
-
-# Create config
-model_config = RegressionConfig(
-    d_model=128,
-    n_layers=4,
-    n_heads=4,
-    d_head=32,
-    input_dim=10,
-    prediction_type="point",
-)
-
-# Train with structured name
-run_name = create_run_name(
-    base="my-exp",
-    model_config=model_config,
-    data_config=data_config,
-    scheme=scheme,
-)
-
-model = train(
-    data_gen,
-    model_config,
-    TrainingConfig(use_wandb=True, wandb_run_name=run_name),
-    data_config=data_config,  # pass to train()!
-)
-
-# Later: load by config
-model_loaded, _, meta = load_by_config(
-    scheme=scheme,
-    n_layers=4,
-    d_model=128,
-    num_tasks=50,
-    input_dim=10,
-    checkpoint_step="latest",
-    project="my-project",
-)
-```
-
----
-
-## API Reference
-
-### Top-Level Imports
-
-```python
-from pfn_transformers import (
-    # Training
-    train,
-    TrainingConfig,
-    WandbLogger,
-
-    # Model
-    PFN,  # factory function
-
-    # Configs
-    RegressionConfig,
-    ClassificationConfig,
-    UnsupervisedConfig,
-
-    # Generators
-    DeterministicGenerator,
-    BayesianGenerator,
-    DatasetGenerator,
-    UnsupervisedBayesian,
-
-    # Utilities
-    sample_batch,
-    estimate_riemann_borders,
-
-    # Submodules
-    checkpointing,
-    wandb,
-    generators,
-    configs,
-    bayes,
-)
-```
-
-### Submodule Imports (Alternative)
-
-```python
-# Generators with short names
-from pfn_transformers.generators import (
-    Deterministic,
-    Bayesian,
-    Dataset,
-    UnsupervisedBayesian,
-)
-
-# Configs with short names
-from pfn_transformers.configs import (
-    Regression,
-    Classification,
-    Unsupervised,
-)
-
-# Bayesian utilities
-from pfn_transformers.bayes import (
-    Prior,
-    Likelihood,
-)
-```
-
-### Function Signatures
-
-#### Training
-
-```python
-train(
-    data_generator: DataGenerator,
-    model_config: RegressionConfig | ClassificationConfig | UnsupervisedConfig,
-    training_config: TrainingConfig,
-    *,
-    resume_from: str | None = None,
-    eval_data_generator: DataGenerator | None = None,
-    data_config: Any = None,  # dataclass for W&B logging
-) -> model
-```
-
-#### Model Factory
-
-```python
-PFN(config) -> model
-```
-
-Creates appropriate model based on config type.
-
-#### Sample Batch
-
-```python
-sample_batch(
-    data_generator: DataGenerator,
-    batch_size: int,
-    seq_len: int,
-) -> tuple[Tensor | None, Tensor]
-```
-
-Returns `(x, y)` where x is None for unsupervised.
-
-#### Estimate Riemann Borders
-
-```python
-estimate_riemann_borders(
-    sample_data: Tensor,  # [N]
-    num_buckets: int,
-) -> Tensor  # [num_buckets + 1]
-```
-
-#### W&B Loading
-
-```python
-# By run ID
-load_from_pretrained(
-    run_identifier: str,
-    checkpoint_step: int | None = None,
-    project: str | None = None,
-    entity: str | None = None,
-    device: str = "auto",
-    load_optimizer: bool = False,
-) -> tuple[model, dict | None, metadata]
-
-# By config
-load_by_config(
-    scheme: RunNameScheme,
-    checkpoint_step: int | "latest" | "earliest" = "latest",
-    device: str = "auto",
-    project: str | None = None,
-    entity: str | None = None,
-    **config_filters,  # e.g., n_layers=4, d_model=128
-) -> tuple[model, dict | None, metadata]
-```
-
----
-
-## Configuration Parameters
-
-### RegressionConfig
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `d_model` | int | Model dimension |
-| `n_layers` | int | Number of layers |
-| `n_heads` | int | Attention heads |
-| `d_head` | int | Head dimension |
-| `input_dim` | int | Input feature dimension |
-| `prediction_type` | `"distribution"` \| `"point"` | Prediction mode |
-| `mask_type` | `"autoregressive-pfn"` \| `"gpt2"` | Attention mask |
-| `bucket_type` | `"uniform"` \| `"riemann"` \| None | Bucketing (for distribution) |
-| `bucket_support` | `"unbounded"` \| `"bounded"` | Support type |
-| `d_vocab` | int | Number of buckets |
-| `y_min` | float | Min value (uniform) |
-| `y_max` | float | Max value (uniform) |
-| `riemann_borders` | Tensor | Borders (riemann) |
-
-### ClassificationConfig
-
-Same as RegressionConfig, plus:
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `num_classes` | int | Number of classes |
-
-### UnsupervisedConfig
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `input_type` | `"discrete"` \| `"continuous"` | Input type |
-| `prediction_type` | `"distribution"` \| `"point"` | Prediction mode |
-| `d_vocab` | int | Vocab size or buckets |
-| `mask_type` | `"gpt2"` | Must be gpt2 |
-| Other | ... | Same as RegressionConfig |
-
-### TrainingConfig
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `batch_size` | int | 32 | Batch size |
-| `seq_len` | int | 64 | Sequence length |
-| `num_steps` | int | 10000 | Training steps |
-| `learning_rate` | float | 1e-4 | Learning rate |
-| `weight_decay` | float | 1e-5 | Weight decay |
-| `use_warmup` | bool | True | LR warmup |
-| `warmup_steps` | int | 500 | Warmup steps |
-| `use_grad_clip` | bool | True | Gradient clipping |
-| `grad_clip` | float | 1.0 | Max gradient norm |
-| `log_every` | int | 100 | Logging interval |
-| `save_checkpoint` | bool | True | Save checkpoints |
-| `save_every` | int | 1000 | Checkpoint interval |
-| `checkpoint_dir` | str | "checkpoints" | Directory |
-| `eval_every` | int \| None | None | Eval interval |
-| `eval_batches` | int | 10 | Batches per eval |
-| `device` | str | "auto" | Device |
-| `use_wandb` | bool | False | Enable W&B |
-| `wandb_project` | str \| None | None | W&B project |
-| `wandb_entity` | str \| None | None | W&B entity |
-| `wandb_run_name` | str \| None | None | Run name |
-| `wandb_log_model` | bool | True | Upload checkpoints |
-| `wandb_tags` | list[str] \| None | None | Tags |
-| `wandb_notes` | str \| None | None | Notes |
-
----
-
-## Best Practices
-
-### Device Placement
-
-Always move inputs to model device:
-
-```python
-device = next(model.parameters()).device
-x = x.to(device)
-y = y.to(device)
-logits = model(x, y)
-```
-
-### W&B Environment Variables
-
-```bash
-export WANDB_PROJECT="my-project"
-export WANDB_ENTITY="myteam"
-```
-
-Then omit from TrainingConfig:
-
-```python
-TrainingConfig(use_wandb=True)  # uses env vars
-```
-
-### Data Config for Reproducibility
-
-Always define and pass data_config:
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class DataConfig:
-    num_tasks: int
-    input_dim: int
-
-model = train(data_gen, model_config, training_config, data_config=DataConfig(...))
-```
-
----
-
-## Development
-
-```bash
-# Format and lint
-ruff check --fix .
-ruff format .
-
-# Type check
-uvx ty check
-
-# Tests
-uv run pytest
-
-# Specific test
-uv run pytest tests/test_train.py -xvs
+# pred is a DistributionPrediction with .probs [1, 20, 100] and .y_grid [100]
 ```
 
 ---
@@ -942,103 +548,25 @@ uv run pytest tests/test_train.py -xvs
 
 ```
 pfn_transformerlens/
-├── __init__.py              # Top-level exports
-├── generators.py            # Generator shortcuts
-├── configs.py               # Config shortcuts
-├── bayes.py                 # Bayesian utilities
-├── train.py                 # Training loop
-├── checkpointing.py         # Checkpoint utilities
-├── wandb_utils.py           # W&B utilities
-├── model/
-│   ├── PFN.py              # Model implementations
-│   ├── PFNMasks.py         # Attention masks
-│   ├── bucketizer.py       # Bucketing
-│   └── configs/            # Config classes
-└── sampler/
-    ├── data_generator.py   # Generator implementations
-    ├── prior_likelihood.py # Bayesian classes
-    └── dataloader.py       # Batching utilities
+  __init__.py              top-level exports
+  train.py                 training loop, TrainingConfig
+  checkpointing.py         save/load checkpoints
+  wandb_utils.py           RunNameScheme, create_run_name
+  wandb_logger.py          WandbLogger
+  generators.py            short-name generator re-exports
+  configs.py               short-name config re-exports
+  bayes.py                 short-name bayesian re-exports
+  model/
+    PFN.py                 BasePFN, SupervisedPFN, UnsupervisedPFN, PFNModel
+    PFNMasks.py            attention mask implementations
+    bucketizer.py          Bucketizer, estimate_riemann_borders
+    configs/
+      base.py              BasePFNConfig
+      regression.py        SupervisedRegressionPFNConfig
+      classification.py    ClassificationPFNConfig
+      unsupervised.py      UnsupervisedPFNConfig
+  sampler/
+    data_generator.py      all generator classes + protocols
+    prior_likelihood.py    PriorDistribution, LikelihoodDistribution, DiscreteTaskDistribution
+    dataloader.py          sample_batch, build_dataloader
 ```
-
----
-
-## Common Patterns
-
-### Basic Training Workflow
-
-```python
-from pfn_transformers import (
-    train, TrainingConfig, RegressionConfig, DeterministicGenerator
-)
-
-# 1. Data
-data_gen = DeterministicGenerator(...)
-
-# 2. Config
-model_config = RegressionConfig(...)
-training_config = TrainingConfig(...)
-
-# 3. Train
-model = train(data_gen, model_config, training_config)
-
-# 4. Inference
-with torch.no_grad():
-    logits = model(x.to(device), y.to(device))
-```
-
-### W&B Workflow
-
-```python
-from pfn_transformers import train, TrainingConfig
-from pfn_transformers.wandb import RunNameScheme, create_run_name, load_by_config
-from dataclasses import dataclass
-
-# 1. Define data config
-@dataclass
-class DataConfig:
-    num_tasks: int = 100
-
-# 2. Define scheme
-scheme = RunNameScheme.from_templates(
-    model={'n_layers': None},
-    data={'num_tasks': None}
-)
-
-# 3. Create run name
-run_name = create_run_name(
-    base="exp",
-    model_config=model_config,
-    data_config=DataConfig(),
-    scheme=scheme,
-)
-
-# 4. Train
-model = train(
-    data_gen,
-    model_config,
-    TrainingConfig(use_wandb=True, wandb_run_name=run_name),
-    data_config=DataConfig(),
-)
-
-# 5. Load later
-model, _, _ = load_by_config(
-    scheme=scheme,
-    n_layers=4,
-    num_tasks=100,
-    project="my-project",
-)
-```
-
----
-
-## License
-
-MIT License
-
----
-
-## Support
-
-Issues: https://github.com/yourusername/pfn_transformers/issues
-Docs: https://pfn-transformers.readthedocs.io
-Paper: https://arxiv.org/abs/2112.10510

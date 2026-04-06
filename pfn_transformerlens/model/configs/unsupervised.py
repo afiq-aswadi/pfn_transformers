@@ -91,7 +91,9 @@ class UnsupervisedPFNConfig(BasePFNConfig):
         # Set output dimension based on prediction type
         if self.prediction_type == "point":
             self.d_vocab_out = 1
-        else:
+        elif self.d_vocab_out == -1:
+            # default: output same size as input vocab
+            # can be overridden (e.g. d_vocab_out < d_vocab to exclude special tokens like BOS)
             self.d_vocab_out = self.d_vocab
 
         self.input_dim = 1

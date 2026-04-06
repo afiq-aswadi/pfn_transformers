@@ -664,11 +664,15 @@ def train(
             task_distribution = None
             prior = getattr(data_generator, "prior", None)
             tasks = getattr(prior, "tasks", None)
+            if tasks is None:
+                base_dist = getattr(prior, "base_distribution", None)
+                tasks = getattr(base_dist, "tasks", None)
             if tasks is not None:
+                source = prior if hasattr(prior, "task_size") else getattr(prior, "base_distribution", prior)
                 task_distribution = {
                     "tasks": tasks.detach().cpu(),
-                    "task_size": getattr(prior, "task_size", None),
-                    "num_tasks": getattr(prior, "num_tasks", None),
+                    "task_size": getattr(source, "task_size", None),
+                    "num_tasks": getattr(source, "num_tasks", None),
                 }
 
             # Create metadata

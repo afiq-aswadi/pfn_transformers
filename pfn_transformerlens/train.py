@@ -192,7 +192,7 @@ def compute_unsupervised_loss(
         and model.config.prediction_type == "distribution"
     ):
         # Discrete next-token prediction with cross-entropy
-        logits_flat = logits[:, :-1, :].reshape(-1, model.config.d_vocab)
+        logits_flat = logits[:, :-1, :].reshape(-1, model.config.d_vocab_out)
         targets_flat = y[:, 1:].long().reshape(-1)
         loss = nn.functional.cross_entropy(logits_flat, targets_flat, reduction="mean")
         metrics = {"loss": float(loss.item()), "loss_type": "CE"}
